@@ -695,9 +695,8 @@ class GraderBot(discord.Client):
 
             await message.reply(reply)
 
-            # 10% chance gửi meme kèm, hoặc nếu có keyword liên quan
-            meme_keywords = ["meme", "buồn", "chán", "haha", "cười", "vui"]
-            should_meme = any(kw in text.lower() for kw in meme_keywords) or random.random() < 0.05
+            # 5% chance gửi meme kèm tin nhắn
+            should_meme = random.random() < 0.05
             if should_meme:
                 meme = await fetch_meme()
                 if meme and meme["url"]:
