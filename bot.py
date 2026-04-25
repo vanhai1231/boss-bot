@@ -204,8 +204,10 @@ async def chat_reply(
     history: list[dict[str, str]] | None = None,
 ) -> str:
     """Send a chat message to DeepSeek and return the reply, with conversation history."""
-    # Prepend username so the bot knows who's talking
-    full_message = ""
+    # Thêm thời gian thực VN
+    now_vn = datetime.datetime.now(VN_TZ)
+    time_str = now_vn.strftime("%H:%M %d/%m/%Y")
+    full_message = f"[Thời gian hiện tại: {time_str}]\n"
     if username:
         full_message += f"[Người gửi: {username}]\n"
     if task_ctx:
