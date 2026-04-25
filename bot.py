@@ -665,18 +665,115 @@ class GraderBot(discord.Client):
     # -----------------------------------------------------------------
 
     async def _deliver_task(self, message: discord.Message, task_name: str) -> None:
-        """Find a task folder and send its files to the channel."""
-        if not TASKS_DIR.exists():
-            await message.reply(
-                "Tính năng giao task chỉ hoạt động khi bot chạy trên máy sếp Hải thôi :)))"
-            )
-            return
-
+        """Find a task and send its files to the channel.
+        
+        Supports both:
+        - Local mode: reads files from TASKS_DIR
+        - Cloud mode: reads from tasks.json (synced via sync_tasks.py)
+        """
         if not task_name:
             await message.reply("Tên task trống rồi sếp ơi, nói lại đi :)))")
             return
 
-        # Fuzzy-match: tìm folder chứa keyword (case-insensitive)
+        is_local = TASKS_DIR.exists()
+
+        if is_local:
+            await self._deliver_task_local(message, task_name)
+        else:
+            await self._deliver_task_cloud(message, task_name)
+
+    async def _deliver_task_cloud(self, message: discord.Message, task_name: str) -> None:
+        """Giao task từ tasks.json (chạy trên Railway/cloud)."""
+        tasks_file = Path(__file__).parent / "tasks.json"
+        if not tasks_file.exists():
+            await message.reply("Chưa có file tasks.json. Sếp chạy `python sync_tasks.py` rồi push lên GitHub đi :)))")
+            return
+
+        with open(tasks_file, "r", encoding="utf-8") as f:
+            all_tasks = json.load(f)
+
+        # Fuzzy search
+        matches = []
+        for key, data in all_tasks.items():
+            if task_name.lower() in key or task_name.lower() in data["name"].lower():
+                matches.append(data)
+
+        if not matches:
+            await message.reply(f"Tôi tìm không ra task **\"{task_name}\"** trong kho. Sếp kiểm tra lại tên đi :)))")
+            return
+
+        if len(matches) > 1:
+            names = "\n".join(f"• `{m['name']}`" for m in matches[:10])
+            await message.reply(f"Tìm được **{len(matches)} task** khớp, sếp nói rõ hơn:\n{names}")
+            return
+
+        task = matches[0]
+        log.info("Delivering task (cloud): %s", task["name"])
+
+        # Build embed
+        embed = discord.Embed(
+            title=f"📋  Task mới: {task['name']}",
+            description="Sếp Hải vừa giao task mới cho các ông cháu!",
+            colour=discord.Colour.gold(),
+        )
+
+        if task.get("drive_link"):
+            embed.add_field(
+                name="📦  Dataset (Google Drive)",
+                value=f"Tải dataset ở đây:\n{task['drive_link']}",
+                inline=False,
+            )
+
+        if task.get("description"):
+            preview = task["description"][:1000]
+            if len(task["description"]) > 1000:
+                preview += "\n\n*...xem file đính kèm để đọc đầy đủ...*"
+            embed.add_field(
+                name="📝  Mô tả đề bài",
+                value=preview,
+                inline=False,
+            )
+
+        embed.set_footer(text="Good luck các ông cháu :)))")
+        embed.timestamp = discord.utils.utcnow()
+        await message.channel.send(embed=embed)
+
+        # Gửi các file text nhỏ dưới dạng Discord file
+        extra_files = task.get("extra_files", {})
+        if extra_files:
+            discord_files = []
+            for fname, content in extra_files.items():
+                discord_files.append(
+                    discord.File(
+                        fp=__import__("io").BytesIO(content.encode("utf-8")),
+                        filename=fname,
+                    )
+                )
+                if len(discord_files) >= 10:
+                    await message.channel.send(files=discord_files)
+                    discord_files = []
+            if discord_files:
+                await message.channel.send(files=discord_files)
+
+        # Gửi description đầy đủ dưới dạng file .md
+        if task.get("description") and len(task["description"]) > 1000:
+            desc_file = discord.File(
+                fp=__import__("io").BytesIO(task["description"].encode("utf-8")),
+                filename="challenge_description.md",
+            )
+            await message.channel.send(file=desc_file)
+
+        log.info("Task delivered (cloud): %s", task["name"])
+
+        # Lưu context
+        self.task_context[message.channel.id] = {
+            "name": task["name"],
+            "description": task.get("description", f"Task: {task['name']}"),
+        }
+
+    async def _deliver_task_local(self, message: discord.Message, task_name: str) -> None:
+        """Giao task từ thư mục local (chạy trên máy Hải)."""
+        # Fuzzy-match
         matches: list[Path] = []
         for folder in TASKS_DIR.iterdir():
             if folder.is_dir() and task_name.lower() in folder.name.lower():
@@ -697,32 +794,23 @@ class GraderBot(discord.Client):
             return
 
         task_dir = matches[0]
-        log.info("Delivering task: %s from %s", task_name, task_dir)
+        log.info("Delivering task (local): %s from %s", task_name, task_dir)
 
-        # Collect eligible files (top-level only, skip big/excluded stuff)
         files_to_send: list[Path] = []
         drive_link: str | None = None
         description_content: str | None = None
 
         for item in sorted(task_dir.iterdir()):
-            # Skip directories
             if item.is_dir():
-                if item.name.lower() in SKIP_DIRS:
-                    continue
-                # Skip other dirs too (only send files)
                 continue
-
-            # Skip hidden files
             if item.name.startswith("."):
                 continue
 
             ext = item.suffix.lower()
 
-            # Skip excluded extensions
             if ext in SKIP_EXTENSIONS:
                 continue
 
-            # Read link.txt for Drive link
             if item.name.lower() == "link.txt":
                 try:
                     drive_link = item.read_text("utf-8").strip()
@@ -730,7 +818,6 @@ class GraderBot(discord.Client):
                     pass
                 continue
 
-            # Read description for context
             if item.name.lower() in ("challenge_description.md", "challenge_description.txt",
                                       "description.md", "description.txt"):
                 try:
@@ -738,12 +825,9 @@ class GraderBot(discord.Client):
                 except Exception:
                     pass
 
-            # Skip files too large for Discord
             if item.stat().st_size > MAX_UPLOAD_SIZE:
-                log.info("Skipping large file: %s (%d MB)", item.name, item.stat().st_size // (1024*1024))
                 continue
 
-            # Skip very large JSON/data files (> 2MB)
             if ext in (".json", ".jsonl", ".csv") and item.stat().st_size > 2 * 1024 * 1024:
                 continue
 
@@ -753,7 +837,6 @@ class GraderBot(discord.Client):
             await message.reply(f"Thư mục **{task_dir.name}** trống hoặc toàn file nặng, gửi không được :)))")
             return
 
-        # Build announcement embed
         embed = discord.Embed(
             title=f"📋  Task mới: {task_dir.name}",
             description=(
@@ -771,7 +854,6 @@ class GraderBot(discord.Client):
             )
 
         if description_content:
-            # Show first 500 chars of description
             preview = description_content[:500]
             if len(description_content) > 500:
                 preview += "\n\n*...đọc file đính kèm để xem đầy đủ...*"
@@ -783,10 +865,8 @@ class GraderBot(discord.Client):
 
         embed.set_footer(text="Good luck các ông cháu :)))")
         embed.timestamp = discord.utils.utcnow()
-
         await message.channel.send(embed=embed)
 
-        # Send files in batches (Discord limit: 10 files per message)
         batch_size = 10
         for i in range(0, len(files_to_send), batch_size):
             batch = files_to_send[i:i + batch_size]
@@ -796,16 +876,14 @@ class GraderBot(discord.Client):
                     discord_files.append(discord.File(str(f), filename=f.name))
                 except Exception as exc:
                     log.error("Failed to attach %s: %s", f.name, exc)
-
             if discord_files:
                 await message.channel.send(files=discord_files)
 
-        log.info("Task delivered: %s — %d files sent", task_dir.name, len(files_to_send))
+        log.info("Task delivered (local): %s — %d files sent", task_dir.name, len(files_to_send))
 
-        # Lưu context task để bot nhớ khi ai hỏi
         self.task_context[message.channel.id] = {
             "name": task_dir.name,
-            "description": description_content or f"Task: {task_dir.name} (không có file mô tả chi tiết)",
+            "description": description_content or f"Task: {task_dir.name}",
         }
         log.info("Task context saved for channel %s: %s", message.channel.id, task_dir.name)
 
