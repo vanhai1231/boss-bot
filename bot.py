@@ -24,8 +24,11 @@ from typing import Any
 
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+import datetime
+import random
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -62,6 +65,26 @@ MAX_UPLOAD_SIZE: int = 25 * 1024 * 1024  # Discord limit 25MB
 
 # Username của chủ nhân (chỉ Caspian mới giao task được)
 OWNER_USERNAMES: set[str] = {"caspiank3", "caspian"}
+
+# Kênh gửi tin nhắn buổi sáng
+MORNING_CHANNEL: str = "announcements"
+
+# Timezone Việt Nam (UTC+7)
+VN_TZ = datetime.timezone(datetime.timedelta(hours=7))
+
+# Các câu chào buổi sáng ngẫu nhiên
+MORNING_MESSAGES: list[str] = [
+    "Dậy đê mấy ông cháy",
+    "Th Dũng dậy làm việc cho anh",
+    "Dậy đi mấy ông cháy, 8h rồi",
+    "Code không tự viết đâu, dậy đê",
+    "Dậy, deadline không chờ ai đâu",
+    "Khang sên sê dậy chưa?",
+    "Nghĩa ơi dậy đi, ngủ gì ngủ hoài",
+    "Dậy đê, tôi chờ mấy ông cháy lâu lắm rồi",
+    "Th Dũng ơi dậy đi, đừng bắt tôi gọi lần 2",
+    "Dậy, ai chưa dậy tôi kể sếp nghe",
+]
 
 
 # Logging
@@ -519,6 +542,33 @@ class GraderBot(discord.Client):
     async def on_ready(self) -> None:
         log.info("Logged in as %s (ID: %s)", self.user, self.user.id if self.user else "?")
         log.info("Bot is ready — listening for /grade commands and file drops.")
+        # Start daily greeting loop
+        if not self.daily_greeting.is_running():
+            self.daily_greeting.start()
+            log.info("Daily greeting task started.")
+
+    @tasks.loop(minutes=1)
+    async def daily_greeting(self) -> None:
+        """Gửi tin nhắn chào buổi sáng lúc 8h Việt Nam."""
+        now = datetime.datetime.now(VN_TZ)
+        # Chỉ gửi lúc 8:00 (đúng phút 0)
+        if now.hour != 8 or now.minute != 0:
+            return
+
+        for guild in self.guilds:
+            for channel in guild.text_channels:
+                if channel.name == MORNING_CHANNEL:
+                    try:
+                        msg = random.choice(MORNING_MESSAGES)
+                        await channel.send(msg)
+                        log.info("Morning greeting sent to #%s in %s", channel.name, guild.name)
+                    except Exception as exc:
+                        log.error("Failed to send morning greeting: %s", exc)
+
+    @daily_greeting.before_loop
+    async def before_daily_greeting(self) -> None:
+        """Wait until bot is ready before starting the loop."""
+        await self.wait_until_ready()
 
     async def on_message(self, message: discord.Message) -> None:
         """Handle file grading + @mention chat."""

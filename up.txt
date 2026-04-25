@@ -1,0 +1,1 @@
+cd /Users/havanhai/shipd/bot && ./update.sh
