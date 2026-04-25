@@ -123,6 +123,12 @@ chính. Thí sinh PHẢI sử dụng ít nhất 1 mô hình Deep Learning (CNN, 
 ViT, ResNet...) hoặc Pretrained Model làm backbone chính. ML truyền thống chỉ được phép dùng như mô \
 hình phụ (ensemble, stacking, post-processing). Vi phạm = CRITICAL.
 
+[KIỂM TRA ĐƯỜNG DẪN I/O]:
+- Kiểm tra xem code có đọc dữ liệu từ ./dataset/public/ (hoặc dataset/public/) không.
+- Kiểm tra xem code có xuất kết quả ra ./working/submission.csv không.
+- Nếu code đọc/ghi sai đường dẫn → đánh WARNING (cảnh báo), KHÔNG phải CRITICAL.
+- Ghi rõ trong violations: "Code không đọc từ ./dataset/public/" hoặc "Code không xuất ra ./working/submission.csv", severity = "WARNING".
+
 [YÊU CẦU ĐÁNH GIÁ - BẮT BUỘC TUÂN THỦ]:
 - Đọc kỹ [ĐỀ BÀI] do người dùng cung cấp và bổ sung các yêu cầu của đề bài vào tiêu chí đánh giá.
 - Đánh giá mức độ nghiêm trọng (Severity):
