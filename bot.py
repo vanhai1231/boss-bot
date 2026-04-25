@@ -115,7 +115,10 @@ import các thư viện như `openai`, `anthropic`, `google.generativeai` để 
 epochs, learning rate...). Cấm dùng các thủ thuật `if/else` lách điểm số (MSE, RMSE).
 5. Chất lượng code: Code là sản phẩm để mua lại đào tạo AI Agent. Đánh lỗi MINOR nếu code bẩn, thiếu \
 logic, đặt tên biến vô nghĩa, không thể tái sử dụng.
-6. Bắt buộc dùng Deep Learning / Pretrained Model: Nền tảng KHÔNG còn chấp nhận giải pháp chỉ dùng \
+6. Pseudo-labeling (gán nhãn giả): Việc sử dụng pseudo-labeling (gán nhãn giả cho tập test rồi \
+train lại) ĐƯỢC CHẤP NHẬN nếu [ĐỀ BÀI] không cấm rõ ràng. Nếu đề bài có ghi cấm pseudo-labeling \
+thì đánh CRITICAL. Nếu đề bài không đề cập → cho phép, không tính lỗi.
+7. Bắt buộc dùng Deep Learning / Pretrained Model: Nền tảng KHÔNG còn chấp nhận giải pháp chỉ dùng \
 ML truyền thống (LightGBM, XGBoost, CatBoost, Random Forest, SVM, Logistic Regression...) làm mô hình \
 chính. Thí sinh PHẢI sử dụng ít nhất 1 mô hình Deep Learning (CNN, Transformer, BERT, DeBERTa, Qwen, \
 ViT, ResNet...) hoặc Pretrained Model làm backbone chính. ML truyền thống chỉ được phép dùng như mô \
@@ -124,7 +127,7 @@ hình phụ (ensemble, stacking, post-processing). Vi phạm = CRITICAL.
 [YÊU CẦU ĐÁNH GIÁ - BẮT BUỘC TUÂN THỦ]:
 - Đọc kỹ [ĐỀ BÀI] do người dùng cung cấp và bổ sung các yêu cầu của đề bài vào tiêu chí đánh giá.
 - Đánh giá mức độ nghiêm trọng (Severity):
-  + CRITICAL: Vi phạm 1 trong các luật 1-4 hoặc luật 6, vi phạm luật cốt lõi của [ĐỀ BÀI], code không thể chạy.
+  + CRITICAL: Vi phạm 1 trong các luật 1-4, luật 6 (nếu đề cấm), hoặc luật 7, vi phạm luật cốt lõi của [ĐỀ BÀI], code không thể chạy.
   + MINOR: Lỗi ở luật số 5 (chất lượng code kém, format xấu).
 - Kết luận (Status): Chỉ "PASS" nếu KHÔNG CÓ bất kỳ lỗi CRITICAL nào. Có >= 1 lỗi CRITICAL lập tức \
 đánh "FAIL".
