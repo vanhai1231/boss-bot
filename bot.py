@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import textwrap
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,9 @@ OWNER_USERNAMES: set[str] = {"caspiank3", "caspian"}
 
 # Kênh gửi tin nhắn buổi sáng
 MORNING_CHANNEL: str = "announcements"
+
+# Số tin nhắn tối đa lưu ký ức mỗi kênh
+MAX_CHAT_HISTORY: int = 20
 
 # Timezone Việt Nam (UTC+7)
 VN_TZ = datetime.timezone(datetime.timedelta(hours=7))
@@ -193,8 +197,13 @@ CHAT_SYSTEM_PROMPT: str = (
 )
 
 
-async def chat_reply(user_message: str, username: str = "", task_ctx: dict[str, str] | None = None) -> str:
-    """Send a chat message to DeepSeek and return the reply."""
+async def chat_reply(
+    user_message: str,
+    username: str = "",
+    task_ctx: dict[str, str] | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    """Send a chat message to DeepSeek and return the reply, with conversation history."""
     # Prepend username so the bot knows who's talking
     full_message = ""
     if username:
@@ -206,12 +215,15 @@ async def chat_reply(user_message: str, username: str = "", task_ctx: dict[str, 
         )
     full_message += user_message
 
+    messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+    # Thêm lịch sử hội thoại (nếu có)
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": full_message})
+
     response = await deepseek_client.chat.completions.create(
-        model="deepseek-v4-pro",  # V4 Flash cho chat nhanh
-        messages=[
-            {"role": "system", "content": CHAT_SYSTEM_PROMPT},
-            {"role": "user", "content": full_message},
-        ],
+        model="deepseek-v4-pro",
+        messages=messages,
         temperature=0.7,
         max_tokens=1024,
     )
@@ -547,6 +559,8 @@ class GraderBot(discord.Client):
         self.pending_task: dict[int, dict] = {}
         # Task context per channel: {channel_id: {"name": str, "description": str}}
         self.task_context: dict[int, dict[str, str]] = {}
+        # Chat history per channel: {channel_id: deque of {"role": str, "content": str}}
+        self.chat_history: dict[int, deque] = {}
 
     async def setup_hook(self) -> None:
         """Sync the command tree globally on startup."""
@@ -650,14 +664,27 @@ class GraderBot(discord.Client):
             async with message.channel.typing():
                 try:
                     ctx = self.task_context.get(message.channel.id)
+                    # Lấy lịch sử chat kênh này
+                    ch_history = list(self.chat_history.get(message.channel.id, []))
                     reply = await chat_reply(
                         text,
                         username=str(message.author.name),
                         task_ctx=ctx,
+                        history=ch_history,
                     )
                 except Exception as exc:
                     log.exception("Chat API failed")
                     reply = f"❌ Lỗi kết nối AI: `{exc}`"
+
+            # Lưu tin nhắn vào ký ức kênh
+            if message.channel.id not in self.chat_history:
+                self.chat_history[message.channel.id] = deque(maxlen=MAX_CHAT_HISTORY)
+            self.chat_history[message.channel.id].append(
+                {"role": "user", "content": f"[{message.author.name}]: {text}"}
+            )
+            self.chat_history[message.channel.id].append(
+                {"role": "assistant", "content": reply[:1500]}
+            )
 
             # Discord giới hạn 2000 ký tự
             if len(reply) > 2000:
