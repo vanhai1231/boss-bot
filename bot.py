@@ -443,7 +443,7 @@ def build_result_embed(
             inline=False,
         )
 
-    embed.set_footer(text="Powered by DeepSeek R1 • Bot chấm bài tự động")
+    embed.set_footer(text=f"Powered by DeepSeek {DEEPSEEK_MODEL.split('-', 1)[-1].upper()} • Bot chấm bài tự động")
     embed.timestamp = discord.utils.utcnow()
 
     return embed
