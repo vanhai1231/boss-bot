@@ -725,8 +725,8 @@ class GraderBot(discord.Client):
             )
 
         if task.get("description"):
-            preview = task["description"][:1000]
-            if len(task["description"]) > 1000:
+            preview = task["description"][:950]
+            if len(task["description"]) > 950:
                 preview += "\n\n*...xem file đính kèm để đọc đầy đủ...*"
             embed.add_field(
                 name="📝  Mô tả đề bài",
