@@ -28,6 +28,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+import aiohttp
 import datetime
 import random
 
@@ -693,6 +694,18 @@ class GraderBot(discord.Client):
                 reply = reply[:1997] + "…"
 
             await message.reply(reply)
+
+            # 10% chance gửi meme kèm, hoặc nếu có keyword liên quan
+            meme_keywords = ["meme", "buồn", "chán", "haha", "cười", "vui"]
+            should_meme = any(kw in text.lower() for kw in meme_keywords) or random.random() < 0.05
+            if should_meme:
+                meme = await fetch_meme()
+                if meme and meme["url"]:
+                    embed = discord.Embed(colour=discord.Colour.from_rgb(255, 105, 180))
+                    embed.set_image(url=meme["url"])
+                    embed.set_footer(text=f"r/{meme['subreddit']}")
+                    await message.channel.send(embed=embed)
+
             return
 
         # --- Chế độ 2: Xử lý pending task name ---
@@ -1065,6 +1078,54 @@ async def grade_command(
         submission.filename,
         result_or_none.get("status", "?") if result_or_none else "?",
     )
+
+
+# ---------------------------------------------------------------------------
+# Meme feature — lấy meme random từ Reddit
+# ---------------------------------------------------------------------------
+
+MEME_SUBREDDITS: list[str] = ["ProgrammerHumor", "memes", "dankmemes", "me_irl"]
+
+async def fetch_meme() -> dict[str, str] | None:
+    """Fetch a random meme from Reddit via meme-api."""
+    sub = random.choice(MEME_SUBREDDITS)
+    url = f"https://meme-api.com/gimme/{sub}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if not data.get("nsfw", False):
+                        return {
+                            "title": data.get("title", "Meme"),
+                            "url": data.get("url", ""),
+                            "subreddit": data.get("subreddit", ""),
+                            "post_link": data.get("postLink", ""),
+                        }
+    except Exception as exc:
+        log.error("Failed to fetch meme: %s", exc)
+    return None
+
+
+@client.tree.command(
+    name="meme",
+    description="Gửi 1 meme random cho vui",
+)
+async def meme_command(interaction: discord.Interaction) -> None:
+    """Gửi meme random."""
+    await interaction.response.defer()
+    meme = await fetch_meme()
+    if meme and meme["url"]:
+        embed = discord.Embed(
+            title=meme["title"],
+            url=meme["post_link"],
+            colour=discord.Colour.from_rgb(255, 105, 180),
+        )
+        embed.set_image(url=meme["url"])
+        embed.set_footer(text=f"r/{meme['subreddit']} • /meme")
+        await interaction.followup.send(embed=embed)
+    else:
+        await interaction.followup.send("Hết meme rồi, thử lại sau đi ông cháu")
 
 
 # ---------------------------------------------------------------------------
