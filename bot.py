@@ -45,9 +45,10 @@ if not DEEPSEEK_API_KEY:
     raise RuntimeError("DEEPSEEK_API_KEY is missing – add it to .env")
 
 # DeepSeek model to use:
-#   - "deepseek-reasoner"  → R1 (lý luận mạnh nhất, khuyến nghị)
-#   - "deepseek-chat"      → V3 (nhanh hơn, hỗ trợ JSON mode)
-DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")
+#   - "deepseek-v4-pro"     → V4 Pro (mạnh nhất, 1.6T params)
+#   - "deepseek-reasoner"  → R1 (lý luận chuyên sâu)
+#   - "deepseek-chat"      → V3 (nhanh, rẻ)
+DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 
 # Maximum file size we'll accept (in bytes) – 512 KB
 MAX_FILE_SIZE: int = 512 * 1024
@@ -193,7 +194,7 @@ async def chat_reply(user_message: str, username: str = "", task_ctx: dict[str, 
     full_message += user_message
 
     response = await deepseek_client.chat.completions.create(
-        model="deepseek-chat",
+        model="deepseek-v4-pro",  # V4 Flash cho chat nhanh
         messages=[
             {"role": "system", "content": CHAT_SYSTEM_PROMPT},
             {"role": "user", "content": full_message},
