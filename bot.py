@@ -681,8 +681,20 @@ class GraderBot(discord.Client):
                     ctx = self.task_context.get(message.channel.id)
                     # Lấy lịch sử chat kênh này
                     ch_history = list(self.chat_history.get(message.channel.id, []))
+
+                    # Nếu tin nhắn là reply → lấy nội dung tin gốc làm context
+                    reply_context = ""
+                    if message.reference and message.reference.message_id:
+                        try:
+                            ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                            ref_author = ref_msg.author.name if ref_msg.author else "?"
+                            ref_content = ref_msg.content[:500] if ref_msg.content else "(trống)"
+                            reply_context = f"[Đang trả lời tin nhắn của {ref_author}: \"{ref_content}\"]\n"
+                        except Exception:
+                            pass
+
                     reply = await chat_reply(
-                        text,
+                        reply_context + text,
                         username=str(message.author.name),
                         task_ctx=ctx,
                         history=ch_history,
