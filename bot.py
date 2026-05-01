@@ -72,6 +72,11 @@ OWNER_USERNAMES: set[str] = {"caspiank3", "caspian"}
 # Kênh gửi tin nhắn buổi sáng
 MORNING_CHANNEL: str = "announcements"
 
+# Username của Dũng Bùi (solsol) — nhắc chơi game ít thôi
+DUNG_USERNAME: str = "solsol"
+GAME_NAG_CHANNEL: str = "announcements"
+GAME_NAG_COOLDOWN: int = 3600  # Chỉ nhắc tối đa 1 lần / giờ
+
 # Số tin nhắn tối đa lưu ký ức mỗi kênh
 MAX_CHAT_HISTORY: int = 20
 
@@ -563,6 +568,7 @@ class GraderBot(discord.Client):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
+        intents.presences = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         # State: {channel_id: {"user_id": int, "action": str}}
@@ -571,6 +577,8 @@ class GraderBot(discord.Client):
         self.task_context: dict[int, dict[str, str]] = {}
         # Chat history per channel: {channel_id: deque of {"role": str, "content": str}}
         self.chat_history: dict[int, deque] = {}
+        # Cooldown nhắc Dũng chơi game
+        self._last_game_nag: float = 0.0
 
     async def setup_hook(self) -> None:
         """Sync the command tree globally on startup."""
@@ -607,6 +615,46 @@ class GraderBot(discord.Client):
     async def before_daily_greeting(self) -> None:
         """Wait until bot is ready before starting the loop."""
         await self.wait_until_ready()
+
+    async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
+        """Nhắc Dũng (solsol) chơi game ít thôi khi phát hiện bật game."""
+        if after.name != DUNG_USERNAME and getattr(after, "display_name", "") != DUNG_USERNAME:
+            return
+
+        # Kiểm tra: trước đó KHÔNG chơi game, giờ CÓ chơi game
+        was_playing = any(a.type == discord.ActivityType.playing for a in before.activities)
+        is_playing = any(a.type == discord.ActivityType.playing for a in after.activities)
+
+        if was_playing or not is_playing:
+            return
+
+        # Cooldown — không spam
+        import time
+        now = time.time()
+        if now - self._last_game_nag < GAME_NAG_COOLDOWN:
+            return
+        self._last_game_nag = now
+
+        # Tìm game name
+        game_name = ""
+        for a in after.activities:
+            if a.type == discord.ActivityType.playing:
+                game_name = a.name or "game"
+                break
+
+        # Gửi tin nhắn vào kênh announcements
+        for guild in self.guilds:
+            for channel in guild.text_channels:
+                if channel.name == GAME_NAG_CHANNEL:
+                    try:
+                        await channel.send(
+                            f"Ê {after.mention}, th Dũng chơi {game_name} ít thôi, "
+                            f"code đi ông cháu :)))"
+                        )
+                        log.info("Game nag sent to %s for playing %s", after.name, game_name)
+                    except Exception as exc:
+                        log.error("Failed to send game nag: %s", exc)
+                    return  # Chỉ gửi 1 kênh
 
     async def on_message(self, message: discord.Message) -> None:
         """Handle file grading + @mention chat."""
