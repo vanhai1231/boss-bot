@@ -47,10 +47,10 @@ if not OPENROUTER_API_KEY:
     raise RuntimeError("OPENROUTER_API_KEY is missing – add it to .env")
 
 # OpenRouter model to use:
-#   - "anthropic/claude-3-5-haiku-20241022"  → Claude 3.5 Haiku (nhanh, rẻ, roleplay tốt)
-#   - "anthropic/claude-3-5-sonnet-20241022" → Claude 3.5 Sonnet (mạnh nhất)
-#   - "deepseek/deepseek-chat-v3-0324"       → DeepSeek V3 (backup)
-LLM_MODEL: str = os.getenv("LLM_MODEL", "anthropic/claude-3-5-haiku-20241022")
+#   - "anthropic/claude-3.5-haiku"   → Claude 3.5 Haiku (nhanh, rẻ, roleplay tốt)
+#   - "anthropic/claude-3.5-sonnet"  → Claude 3.5 Sonnet (mạnh nhất)
+#   - "deepseek/deepseek-chat-v3-0324" → DeepSeek V3 (backup)
+LLM_MODEL: str = os.getenv("LLM_MODEL", "anthropic/claude-3.5-haiku")
 
 # Maximum file size we'll accept (in bytes) – 512 KB
 MAX_FILE_SIZE: int = 512 * 1024
