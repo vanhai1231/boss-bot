@@ -86,8 +86,9 @@ LURK_COOLDOWN: int = 300  # Tối thiểu 5 phút giữa 2 lần lurk mỗi kên
 
 # Daily Joke
 JOKES_FILE: str = os.path.join(os.path.dirname(__file__), "jokes.json")
-JOKE_CHANNEL: str = os.getenv("JOKE_CHANNEL", "general")  # Kênh đố vui
-JOKE_HOUR: int = 12  # Gửi lúc 12h trưa VN
+JOKE_CHANNEL: str = os.getenv("JOKE_CHANNEL", "question")  # Kênh đố vui
+JOKE_HOUR: int = 12  # Giờ gửi (VN)
+JOKE_MINUTE: int = 20  # Phút gửi
 
 # Số tin nhắn tối đa lưu ký ức mỗi kênh
 MAX_CHAT_HISTORY: int = 20
@@ -692,7 +693,7 @@ class GraderBot(discord.Client):
     async def daily_joke(self) -> None:
         """Đố vui mỗi ngày lúc 12h trưa VN."""
         now = datetime.datetime.now(VN_TZ)
-        if now.hour != JOKE_HOUR or now.minute != 0:
+        if now.hour != JOKE_HOUR or now.minute != JOKE_MINUTE:
             return
 
         joke = _get_next_joke()
