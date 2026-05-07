@@ -52,7 +52,7 @@ if not OPENROUTER_API_KEY:
 # DeepSeek → Chat bựa (tiếng Việt mượt)
 DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 # Claude → Chấm bài (chính xác)
-GRADER_MODEL: str = os.getenv("GRADER_MODEL", "anthropic/claude-3.5-sonnet")
+GRADER_MODEL: str = os.getenv("GRADER_MODEL", "anthropic/claude-3.5-haiku")
 
 # Maximum file size we'll accept (in bytes) – 512 KB
 MAX_FILE_SIZE: int = 512 * 1024
@@ -535,7 +535,7 @@ def build_result_embed(
             inline=False,
         )
 
-    embed.set_footer(text=f"Chat: DeepSeek V4-PRO • Grading: Claude Sonnet • Bot chấm bài tự động")
+    embed.set_footer(text=f"Chat: DeepSeek V4-PRO • Grading: Claude Haiku • Bot chấm bài tự động")
     embed.timestamp = discord.utils.utcnow()
 
     return embed
