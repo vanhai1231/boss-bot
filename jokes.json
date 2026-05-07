@@ -1,0 +1,50 @@
+[
+  {
+    "id": 1,
+    "question": "Chồn đi ngược được gọi là chồn gì?",
+    "answer": "chồn lùi",
+    "used": false
+  },
+  {
+    "id": 2,
+    "question": "Mấy đứa hay ngồi sát bồ gọi là gì?",
+    "answer": "áp pồ",
+    "used": false
+  },
+  {
+    "id": 3,
+    "question": "Cali đi hỏi quán bar được gọi là gì?",
+    "answer": "bar where",
+    "used": false
+  },
+  {
+    "id": 4,
+    "question": "Cha của con ong chết thì gọi là gì?",
+    "answer": "bee đát",
+    "used": false
+  },
+  {
+    "id": 5,
+    "question": "Khăn lau bàn màu vàng gọi là gì?",
+    "answer": "ỷellow",
+    "used": false
+  },
+  {
+    "id": 6,
+    "question": "Xe gì trẻ em không đi được?",
+    "answer": "xe cút kid",
+    "used": false
+  },
+  {
+    "id": 7,
+    "question": "Tại sao leo núi thường buồn cười?",
+    "answer": "vì nó có nhiều dốc",
+    "used": false
+  },
+  {
+    "id": 8,
+    "question": "Anh cảnh mà buồn gọi là gì?",
+    "answer": "anh cảnh sad",
+    "used": false
+  }
+]

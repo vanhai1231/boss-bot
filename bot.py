@@ -84,6 +84,11 @@ LURK_CHANCE: float = float(os.getenv("LURK_CHANCE", "0.03"))  # 3% mỗi tin nh�
 LURK_MIN_MESSAGES: int = 5  # Cần ít nhất 5 tin trong history mới lurk
 LURK_COOLDOWN: int = 300  # Tối thiểu 5 phút giữa 2 lần lurk mỗi kênh
 
+# Daily Joke
+JOKES_FILE: str = os.path.join(os.path.dirname(__file__), "jokes.json")
+JOKE_CHANNEL: str = os.getenv("JOKE_CHANNEL", "general")  # Kênh đố vui
+JOKE_HOUR: int = 12  # Gửi lúc 12h trưa VN
+
 # Số tin nhắn tối đa lưu ký ức mỗi kênh
 MAX_CHAT_HISTORY: int = 20
 
@@ -111,6 +116,46 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 )
 log = logging.getLogger("grader-bot")
+
+
+# ---------------------------------------------------------------------------
+# Joke helpers
+# ---------------------------------------------------------------------------
+
+def _load_jokes() -> list[dict]:
+    """Load jokes from JSON file."""
+    try:
+        with open(JOKES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_jokes(jokes: list[dict]) -> None:
+    """Save jokes back to JSON file."""
+    with open(JOKES_FILE, "w", encoding="utf-8") as f:
+        json.dump(jokes, f, ensure_ascii=False, indent=2)
+
+
+def _get_next_joke() -> dict | None:
+    """Get next unused joke, mark it as used, return it."""
+    jokes = _load_jokes()
+    unused = [j for j in jokes if not j.get("used", False)]
+    if not unused:
+        # Reset all jokes if all used
+        for j in jokes:
+            j["used"] = False
+        _save_jokes(jokes)
+        unused = jokes
+    if not unused:
+        return None
+    joke = unused[0]
+    # Mark as used
+    for j in jokes:
+        if j["id"] == joke["id"]:
+            j["used"] = True
+    _save_jokes(jokes)
+    return joke
 
 # ---------------------------------------------------------------------------
 # System prompt (Vietnamese rubric – verbatim from spec)
@@ -600,6 +645,8 @@ class GraderBot(discord.Client):
         self._last_game_nag: float = 0.0
         # Cooldown lurk mỗi kênh: {channel_id: timestamp}
         self._last_lurk: dict[int, float] = {}
+        # Joke đang active: {channel_id: {"joke": {...}, "message_id": int, "answered": bool}}
+        self._active_joke: dict[int, dict] = {}
 
     async def setup_hook(self) -> None:
         """Sync the command tree globally on startup."""
@@ -613,6 +660,10 @@ class GraderBot(discord.Client):
         if not self.daily_greeting.is_running():
             self.daily_greeting.start()
             log.info("Daily greeting task started.")
+        # Start daily joke loop
+        if not self.daily_joke.is_running():
+            self.daily_joke.start()
+            log.info("Daily joke task started.")
 
     @tasks.loop(minutes=1)
     async def daily_greeting(self) -> None:
@@ -635,6 +686,42 @@ class GraderBot(discord.Client):
     @daily_greeting.before_loop
     async def before_daily_greeting(self) -> None:
         """Wait until bot is ready before starting the loop."""
+        await self.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def daily_joke(self) -> None:
+        """Đố vui mỗi ngày lúc 12h trưa VN."""
+        now = datetime.datetime.now(VN_TZ)
+        if now.hour != JOKE_HOUR or now.minute != 0:
+            return
+
+        joke = _get_next_joke()
+        if not joke:
+            return
+
+        for guild in self.guilds:
+            for channel in guild.text_channels:
+                if channel.name == JOKE_CHANNEL:
+                    try:
+                        embed = discord.Embed(
+                            title="🤔 Đố Vui Của Ngày",
+                            description=f"**{joke['question']}**\n\n"
+                                        f"Reply tin nhắn này để trả lời! Ai đúng trước thắng 🏆",
+                            colour=discord.Colour.gold(),
+                        )
+                        embed.set_footer(text="Boss Đố Vui • Reply để trả lời")
+                        msg = await channel.send(embed=embed)
+                        self._active_joke[channel.id] = {
+                            "joke": joke,
+                            "message_id": msg.id,
+                            "answered": False,
+                        }
+                        log.info("Daily joke sent to #%s: %s", channel.name, joke['question'])
+                    except Exception as exc:
+                        log.error("Failed to send daily joke: %s", exc)
+
+    @daily_joke.before_loop
+    async def before_daily_joke(self) -> None:
         await self.wait_until_ready()
 
     async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
@@ -690,6 +777,46 @@ class GraderBot(discord.Client):
         # Ignore messages from bots (including ourselves)
         if message.author.bot:
             return
+
+        # --- Kiểm tra trả lời đố vui ---
+        if (
+            message.reference
+            and message.reference.message_id
+            and message.channel.id in self._active_joke
+        ):
+            joke_data = self._active_joke[message.channel.id]
+            if (
+                message.reference.message_id == joke_data["message_id"]
+                and not joke_data["answered"]
+            ):
+                user_answer = message.content.strip().lower()
+                correct_answer = joke_data["joke"]["answer"].lower()
+
+                # So sánh linh hoạt: chứa đáp án hoặc gần đúng
+                is_correct = (
+                    correct_answer in user_answer
+                    or user_answer in correct_answer
+                )
+
+                if is_correct:
+                    joke_data["answered"] = True
+                    await message.reply(
+                        f"🏆 **{message.author.display_name}** trả lời đúng rồi!\n"
+                        f"Đáp án: **{joke_data['joke']['answer']}** <:IMG_0368:1501803653403508888>"
+                    )
+                else:
+                    # Trêu người trả lời sai
+                    try:
+                        tease = await chat_reply(
+                            f"[ĐỐ VUI] Câu hỏi: \"{joke_data['joke']['question']}\". "
+                            f"{message.author.name} trả lời sai: \"{message.content}\". "
+                            f"Trêu người này 1 câu ngắn (KHÔNG tiết lộ đáp án), bựa bựa.",
+                            username=message.author.name,
+                        )
+                        await message.reply(tease)
+                    except Exception:
+                        await message.reply(f"Sai rồi ông cháu, thử lại đi <:IMG_0367:1501803655601586277>")
+                return
 
         # --- Lưu tất cả tin nhắn vào ký ức kênh (dù có @mention hay không) ---
         if message.content and message.content.strip():
