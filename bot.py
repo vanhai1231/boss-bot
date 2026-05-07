@@ -230,6 +230,7 @@ CHAT_SYSTEM_PROMPT: str = (
 async def chat_reply(
     user_message: str,
     username: str = "",
+    user_roles: list[str] | None = None,
     task_ctx: dict[str, str] | None = None,
     history: list[dict[str, str]] | None = None,
 ) -> str:
@@ -240,6 +241,8 @@ async def chat_reply(
     full_message = f"[Thời gian hiện tại: {time_str}]\n"
     if username:
         full_message += f"[Người gửi: {username}]\n"
+    if user_roles:
+        full_message += f"[Roles: {', '.join(user_roles)}]\n"
     if task_ctx:
         full_message += (
             f"[TASK HIỆN TẠI TRONG KÊnh: {task_ctx['name']}]\n"
@@ -747,9 +750,15 @@ class GraderBot(discord.Client):
                         except Exception:
                             pass
 
+                    # Lấy roles của người gửi
+                    member_roles = []
+                    if hasattr(message.author, 'roles'):
+                        member_roles = [r.name for r in message.author.roles if r.name != '@everyone']
+
                     reply = await chat_reply(
                         reply_context + text,
                         username=str(message.author.name),
+                        user_roles=member_roles,
                         task_ctx=ctx,
                         history=ch_history,
                     )
