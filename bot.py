@@ -1,13 +1,13 @@
 """
 Discord Bot – Automated ML Code Reviewer & Grader
 ===================================================
-Uses discord.py slash commands and the OpenRouter API (Claude 3.5 Haiku)
+Uses discord.py slash commands and the DeepSeek API (via the openai client)
 to evaluate Machine-Learning submissions against a strict, Vietnamese-language
 rubric with 5 hardcoded rules.
 
 Usage
 -----
-1. Fill in `.env` with DISCORD_TOKEN and OPENROUTER_API_KEY.
+1. Fill in `.env` with DISCORD_TOKEN and DEEPSEEK_API_KEY.
 2. pip install -r requirements.txt
 3. python bot.py
 """
@@ -39,18 +39,20 @@ import random
 load_dotenv()
 
 DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN", "")
+DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing – add it to .env")
+if not DEEPSEEK_API_KEY:
+    raise RuntimeError("DEEPSEEK_API_KEY is missing – add it to .env")
 if not OPENROUTER_API_KEY:
     raise RuntimeError("OPENROUTER_API_KEY is missing – add it to .env")
 
-# OpenRouter model to use:
-#   - "anthropic/claude-3.5-haiku"   → Claude 3.5 Haiku (nhanh, rẻ, roleplay tốt)
-#   - "anthropic/claude-3.5-sonnet"  → Claude 3.5 Sonnet (mạnh nhất)
-#   - "deepseek/deepseek-chat-v3-0324" → DeepSeek V3 (backup)
-LLM_MODEL: str = os.getenv("LLM_MODEL", "anthropic/claude-3.5-haiku")
+# DeepSeek → Chat bựa (tiếng Việt mượt)
+DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+# Claude → Chấm bài (chính xác)
+GRADER_MODEL: str = os.getenv("GRADER_MODEL", "anthropic/claude-3.5-sonnet")
 
 # Maximum file size we'll accept (in bytes) – 512 KB
 MAX_FILE_SIZE: int = 512 * 1024
@@ -163,10 +165,17 @@ hình phụ (ensemble, stacking, post-processing). Vi phạm = CRITICAL.
 """)
 
 # ---------------------------------------------------------------------------
-# OpenRouter API client (async) — OpenAI-compatible
+# API clients (async)
+#   - DeepSeek: chat bựa
+#   - OpenRouter (Claude): chấm bài
 # ---------------------------------------------------------------------------
 
-llm_client = AsyncOpenAI(
+deepseek_client = AsyncOpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com",
+)
+
+claude_client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1",
 )
@@ -216,7 +225,7 @@ async def chat_reply(
     task_ctx: dict[str, str] | None = None,
     history: list[dict[str, str]] | None = None,
 ) -> str:
-    """Send a chat message to OpenRouter (Claude 3.5 Haiku) and return the reply."""
+    """Send a chat message to DeepSeek and return the reply, with conversation history."""
     # Thêm thời gian thực VN
     now_vn = datetime.datetime.now(VN_TZ)
     time_str = now_vn.strftime("%H:%M %d/%m/%Y")
@@ -236,8 +245,8 @@ async def chat_reply(
         messages.extend(history)
     messages.append({"role": "user", "content": full_message})
 
-    response = await llm_client.chat.completions.create(
-        model=LLM_MODEL,
+    response = await deepseek_client.chat.completions.create(
+        model="deepseek-v4-pro",
         messages=messages,
         temperature=0.7,
         max_tokens=1024,
@@ -276,35 +285,29 @@ async def evaluate_submission(
     challenge_description: str,
     source_code: str,
 ) -> dict[str, Any]:
-    """Send the submission to OpenRouter for evaluation and return parsed JSON."""
+    """Send the submission to Claude (via OpenRouter) for evaluation and return parsed JSON."""
 
     user_message = (
         f"[ĐỀ BÀI]:\n{challenge_description}\n\n"
         f"[CODE CỦA THÍ SINH]:\n```\n{source_code}\n```"
     )
 
-    log.info("Sending evaluation request to OpenRouter (%s)…", LLM_MODEL)
+    log.info("Sending evaluation request to Claude (%s)…", GRADER_MODEL)
 
-    is_reasoner = "reasoner" in LLM_MODEL
-
-    # Build API kwargs – reasoner models don't support response_format or temperature
     api_kwargs: dict[str, Any] = {
-        "model": LLM_MODEL,
+        "model": GRADER_MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
         "max_tokens": 8192,
+        "temperature": 0.0,
     }
 
-    if not is_reasoner:
-        api_kwargs["response_format"] = {"type": "json_object"}
-        api_kwargs["temperature"] = 0.0
-
-    response = await llm_client.chat.completions.create(**api_kwargs)
+    response = await claude_client.chat.completions.create(**api_kwargs)
 
     raw = response.choices[0].message.content or "{}"
-    log.info("Raw LLM response (first 500 chars): %s", raw[:500])
+    log.info("Raw Claude response (first 500 chars): %s", raw[:500])
 
     # Log reasoning trace if available (R1 model)
     reasoning = getattr(response.choices[0].message, "reasoning_content", None)
@@ -313,7 +316,7 @@ async def evaluate_submission(
 
     result = _extract_json(raw)
     if not result:
-        log.error("Failed to extract JSON from LLM response")
+        log.error("Failed to extract JSON from Claude response")
         result = {
             "status": "ERROR",
             "reasoning": "Không thể phân tích phản hồi từ AI.",
@@ -470,7 +473,7 @@ def build_result_embed(
             inline=False,
         )
 
-    embed.set_footer(text=f"Powered by Claude 3.5 Haiku via OpenRouter • Bot chấm bài tự động")
+    embed.set_footer(text=f"Chat: DeepSeek V4-PRO • Grading: Claude Sonnet • Bot chấm bài tự động")
     embed.timestamp = discord.utils.utcnow()
 
     return embed
@@ -543,14 +546,14 @@ async def _run_grading_pipeline(
             colour=discord.Colour.orange(),
         ), None
 
-    # --- Call OpenRouter ---
+    # --- Call Claude (grading) ---
     try:
         result = await evaluate_submission(challenge_description, source_code)
     except Exception as exc:
-        log.exception("OpenRouter API call failed")
+        log.exception("Claude API call failed")
         return None, discord.Embed(
             title="❌  Lỗi API",
-            description=f"Không thể kết nối tới OpenRouter API.\n```{exc}```",
+            description=f"Không thể kết nối tới Claude API.\n```{exc}```",
             colour=discord.Colour.red(),
         ), None
 
