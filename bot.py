@@ -79,6 +79,11 @@ DUNG_USERNAME: str = "solsol"
 GAME_NAG_CHANNEL: str = "announcements"
 GAME_NAG_COOLDOWN: int = 3600  # Chỉ nhắc tối đa 1 lần / giờ
 
+# Lurk mode: bot tự xen vào cuộc trò chuyện
+LURK_CHANCE: float = float(os.getenv("LURK_CHANCE", "0.03"))  # 3% mỗi tin nhắn
+LURK_MIN_MESSAGES: int = 5  # Cần ít nhất 5 tin trong history mới lurk
+LURK_COOLDOWN: int = 300  # Tối thiểu 5 phút giữa 2 lần lurk mỗi kênh
+
 # Số tin nhắn tối đa lưu ký ức mỗi kênh
 MAX_CHAT_HISTORY: int = 20
 
@@ -593,6 +598,8 @@ class GraderBot(discord.Client):
         self.chat_history: dict[int, deque] = {}
         # Cooldown nhắc Dũng chơi game
         self._last_game_nag: float = 0.0
+        # Cooldown lurk mỗi kênh: {channel_id: timestamp}
+        self._last_lurk: dict[int, float] = {}
 
     async def setup_hook(self) -> None:
         """Sync the command tree globally on startup."""
@@ -684,6 +691,14 @@ class GraderBot(discord.Client):
         if message.author.bot:
             return
 
+        # --- Lưu tất cả tin nhắn vào ký ức kênh (dù có @mention hay không) ---
+        if message.content and message.content.strip():
+            if message.channel.id not in self.chat_history:
+                self.chat_history[message.channel.id] = deque(maxlen=MAX_CHAT_HISTORY)
+            self.chat_history[message.channel.id].append(
+                {"role": "user", "content": f"[{message.author.name}]: {message.content[:500]}"}
+            )
+
         # --- Chế độ 1: Chat khi @mention bot ---
         # Kiểm tra cả user mention lẫn role mention (vì @Boss có thể là role)
         is_mentioned = False
@@ -766,12 +781,9 @@ class GraderBot(discord.Client):
                     log.exception("Chat API failed")
                     reply = f"❌ Lỗi kết nối AI: `{exc}`"
 
-            # Lưu tin nhắn vào ký ức kênh
+            # Lưu reply của bot vào ký ức kênh (user msg đã lưu ở trên)
             if message.channel.id not in self.chat_history:
                 self.chat_history[message.channel.id] = deque(maxlen=MAX_CHAT_HISTORY)
-            self.chat_history[message.channel.id].append(
-                {"role": "user", "content": f"[{message.author.name}]: {text}"}
-            )
             self.chat_history[message.channel.id].append(
                 {"role": "assistant", "content": reply[:1500]}
             )
@@ -801,6 +813,49 @@ class GraderBot(discord.Client):
                 del self.pending_task[message.channel.id]
                 task_name = message.content.strip()
                 await self._deliver_task(message, task_name)
+                return
+
+        # --- Chế độ Lurk: Bot tự xen vào cuộc trò chuyện ---
+        if message.content and message.content.strip() and not message.attachments:
+            import time as _time
+            ch_id = message.channel.id
+            ch_hist = self.chat_history.get(ch_id, deque())
+            now_ts = _time.time()
+            last_lurk = self._last_lurk.get(ch_id, 0.0)
+
+            if (
+                len(ch_hist) >= LURK_MIN_MESSAGES
+                and (now_ts - last_lurk) > LURK_COOLDOWN
+                and random.random() < LURK_CHANCE
+            ):
+                log.info("Lurk triggered in #%s", getattr(message.channel, 'name', ch_id))
+                self._last_lurk[ch_id] = now_ts
+
+                async with message.channel.typing():
+                    try:
+                        lurk_history = list(ch_hist)
+                        lurk_instruction = (
+                            "[LURK MODE] Bạn đang QUAN SÁT cuộc trò chuyện và muốn XEN VÀO. "
+                            "Không ai tag bạn, bạn tự nhảy vào nói. "
+                            "Hãy bình luận, trêu, hoặc góp ý về những gì mọi người đang nói. "
+                            "Tối đa 1 câu ngắn, phải liên quan đến nội dung gần nhất."
+                        )
+                        reply = await chat_reply(
+                            lurk_instruction,
+                            username="OBSERVER",
+                            history=lurk_history,
+                        )
+                    except Exception:
+                        log.exception("Lurk chat failed")
+                        return
+
+                if reply and reply.strip():
+                    if len(reply) > 2000:
+                        reply = reply[:1997] + "…"
+                    await message.channel.send(reply)
+                    self.chat_history[ch_id].append(
+                        {"role": "assistant", "content": reply[:1500]}
+                    )
                 return
 
         # --- Chế độ 3: Chấm bài tự động (chỉ trong kênh chỉ định) ---
