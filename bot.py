@@ -696,6 +696,42 @@ class GraderBot(discord.Client):
                     except Exception as exc:
                         log.error("Failed to send morning greeting: %s", exc)
 
+        # --- One-time announcements ---
+        announce_flag = os.path.join(os.path.dirname(__file__), ".announced_taskflow")
+        if not os.path.exists(announce_flag):
+            for guild in self.guilds:
+                for channel in guild.text_channels:
+                    if channel.name == MORNING_CHANNEL:
+                        try:
+                            embed = discord.Embed(
+                                title="🚀 Ra mắt TaskFlow — Nền tảng nhận Task mới!",
+                                description=(
+                                    "Chào mấy ông cháu, sếp Hải vừa làm xong web **TaskFlow** "
+                                    "để mấy ông cháu lên nhận task làm cho tiện.\n\n"
+                                    "**Cách dùng:**\n"
+                                    "1️⃣ Vào link → Đăng ký tài khoản → Xác thực email\n"
+                                    "2️⃣ Chờ Admin (sếp Hải) duyệt tài khoản\n"
+                                    "3️⃣ Đăng nhập → Vào **Task Board** → Nhận task\n"
+                                    "4️⃣ Làm xong → Nộp `solution.py` + `submission.csv`\n\n"
+                                    "**Tính năng:**\n"
+                                    "• 📋 Task Board với deadline countdown\n"
+                                    "• 🏆 Leaderboard xem ai điểm cao nhất\n"
+                                    "• ⭐ Reviewer chấm bài & feedback\n"
+                                    "• 💰 Payout tracking\n\n"
+                                    "Lên nhận task ngay đê mấy ông cháu! 🔥"
+                                ),
+                                colour=discord.Colour.green(),
+                                url="https://taskflow-production-f51b.up.railway.app",
+                            )
+                            embed.set_footer(text="TaskFlow by Caspian • Apple-inspired Dark Mode")
+                            await channel.send(embed=embed)
+                            log.info("TaskFlow announcement sent to #%s", channel.name)
+                        except Exception as exc:
+                            log.error("Failed to send TaskFlow announcement: %s", exc)
+            # Mark as announced
+            with open(announce_flag, "w") as f:
+                f.write(datetime.datetime.now(VN_TZ).isoformat())
+
     @daily_greeting.before_loop
     async def before_daily_greeting(self) -> None:
         """Wait until bot is ready before starting the loop."""
