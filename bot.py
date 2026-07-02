@@ -1,9 +1,9 @@
 """
 Discord Bot – Automated ML Code Reviewer & Grader
 ===================================================
-Uses discord.py slash commands and the DeepSeek API (via the openai client)
-to evaluate Machine-Learning submissions against a strict, Vietnamese-language
-rubric with 5 hardcoded rules.
+Uses discord.py slash commands and an LLM grader (DeepSeek by default, or
+Claude via OpenRouter) to evaluate Machine-Learning submissions against a
+strict, Vietnamese-language rubric.
 
 Usage
 -----
@@ -42,17 +42,25 @@ DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN", "")
 DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
+# DeepSeek → Chat bựa (tiếng Việt mượt)
+DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+
+# AI chấm bài. Mặc định dùng DeepSeek V4 Pro để đảm bảo auto-grading gửi code
+# tới LLM, không tự chấm bằng heuristic local.
+GRADER_PROVIDER: str = os.getenv("GRADER_PROVIDER", "deepseek").strip().lower()
+GRADER_MODEL: str = os.getenv(
+    "GRADER_MODEL",
+    DEEPSEEK_MODEL if GRADER_PROVIDER == "deepseek" else "anthropic/claude-3.5-haiku",
+)
+
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing – add it to .env")
 if not DEEPSEEK_API_KEY:
     raise RuntimeError("DEEPSEEK_API_KEY is missing – add it to .env")
-if not OPENROUTER_API_KEY:
-    raise RuntimeError("OPENROUTER_API_KEY is missing – add it to .env")
-
-# DeepSeek → Chat bựa (tiếng Việt mượt)
-DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
-# Claude → Chấm bài (chính xác)
-GRADER_MODEL: str = os.getenv("GRADER_MODEL", "anthropic/claude-3.5-haiku")
+if GRADER_PROVIDER not in {"deepseek", "claude", "openrouter"}:
+    raise RuntimeError("GRADER_PROVIDER must be one of: deepseek, claude, openrouter")
+if GRADER_PROVIDER in {"claude", "openrouter"} and not OPENROUTER_API_KEY:
+    raise RuntimeError("OPENROUTER_API_KEY is missing – add it to .env for Claude/OpenRouter grading")
 
 # Maximum file size we'll accept (in bytes) – 512 KB
 MAX_FILE_SIZE: int = 512 * 1024
@@ -71,24 +79,22 @@ MAX_UPLOAD_SIZE: int = 25 * 1024 * 1024  # Discord limit 25MB
 # Username của chủ nhân (chỉ Caspian mới giao task được)
 OWNER_USERNAMES: set[str] = {"caspiank3", "caspian"}
 
-# Kênh gửi tin nhắn buổi sáng
-MORNING_CHANNEL: str = "announcements"
+# Kênh thông báo chung
+ANNOUNCEMENT_CHANNEL: str = os.getenv("ANNOUNCEMENT_CHANNEL", "announcements")
 
-# Username của Dũng Bùi (solsol) — nhắc chơi game ít thôi
-DUNG_USERNAME: str = "solsol"
-GAME_NAG_CHANNEL: str = "announcements"
+# Kênh gửi tin nhắn buổi sáng
+MORNING_CHANNEL: str = os.getenv("MORNING_CHANNEL", ANNOUNCEMENT_CHANNEL)
+
+# Username/alias của Dũng Bùi — nhắc chơi game ít thôi
+DUNG_USERNAMES: set[str] = {"solsol", "solstice1707", "dung", "dũng"}
+GAME_NAG_CHANNEL: str = os.getenv("GAME_NAG_CHANNEL", ANNOUNCEMENT_CHANNEL)
 GAME_NAG_COOLDOWN: int = 3600  # Chỉ nhắc tối đa 1 lần / giờ
+DUNG_ROAST_COOLDOWN: int = int(os.getenv("DUNG_ROAST_COOLDOWN", "120"))
 
 # Lurk mode: bot tự xen vào cuộc trò chuyện
 LURK_CHANCE: float = float(os.getenv("LURK_CHANCE", "0.03"))  # 3% mỗi tin nhắn
 LURK_MIN_MESSAGES: int = 5  # Cần ít nhất 5 tin trong history mới lurk
 LURK_COOLDOWN: int = 300  # Tối thiểu 5 phút giữa 2 lần lurk mỗi kênh
-
-# Daily Joke
-JOKES_FILE: str = os.path.join(os.path.dirname(__file__), "jokes.json")
-JOKE_CHANNEL: str = os.getenv("JOKE_CHANNEL", "question")  # Kênh đố vui
-JOKE_HOUR: int = 12  # Giờ gửi (VN)
-JOKE_MINUTE: int = 20  # Phút gửi
 
 # Số tin nhắn tối đa lưu ký ức mỗi kênh
 MAX_CHAT_HISTORY: int = 20
@@ -119,44 +125,20 @@ logging.basicConfig(
 log = logging.getLogger("grader-bot")
 
 
-# ---------------------------------------------------------------------------
-# Joke helpers
-# ---------------------------------------------------------------------------
-
-def _load_jokes() -> list[dict]:
-    """Load jokes from JSON file."""
-    try:
-        with open(JOKES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+def _user_name_variants(user: Any) -> set[str]:
+    """Return lowercase Discord name variants available on a user/member object."""
+    names: set[str] = set()
+    for attr in ("name", "display_name", "global_name"):
+        value = getattr(user, attr, "")
+        if value:
+            names.add(str(value).lower())
+    return names
 
 
-def _save_jokes(jokes: list[dict]) -> None:
-    """Save jokes back to JSON file."""
-    with open(JOKES_FILE, "w", encoding="utf-8") as f:
-        json.dump(jokes, f, ensure_ascii=False, indent=2)
+def _is_dung_user(user: Any) -> bool:
+    """Best-effort check for Dũng's Discord account aliases."""
+    return not _user_name_variants(user).isdisjoint(DUNG_USERNAMES)
 
-
-def _get_next_joke() -> dict | None:
-    """Get next unused joke, mark it as used, return it."""
-    jokes = _load_jokes()
-    unused = [j for j in jokes if not j.get("used", False)]
-    if not unused:
-        # Reset all jokes if all used
-        for j in jokes:
-            j["used"] = False
-        _save_jokes(jokes)
-        unused = jokes
-    if not unused:
-        return None
-    joke = unused[0]
-    # Mark as used
-    for j in jokes:
-        if j["id"] == joke["id"]:
-            j["used"] = True
-    _save_jokes(jokes)
-    return joke
 
 # ---------------------------------------------------------------------------
 # System prompt (Vietnamese rubric – verbatim from spec)
@@ -164,7 +146,7 @@ def _get_next_joke() -> dict | None:
 
 SYSTEM_PROMPT: str = textwrap.dedent("""\
 Bạn là một giám khảo chấm thi lập trình AI/ML tự động, cực kỳ lạnh lùng và khắt khe. \
-Nhiệm vụ của bạn là phân tích code của thí sinh, đối chiếu với [ĐỀ BÀI] và 5 [LUẬT CỐ ĐỊNH] dưới đây.
+Nhiệm vụ của bạn là phân tích code của thí sinh, đối chiếu với [ĐỀ BÀI] và các [LUẬT CỐ ĐỊNH] dưới đây.
 
 [LUẬT CỐ ĐỊNH]:
 1. Tuyệt đối không Hardcode: Phát hiện và đánh dấu lỗi vi phạm nếu code có chứa các mảng/dict fix cứng \
@@ -185,6 +167,26 @@ ML truyền thống (LightGBM, XGBoost, CatBoost, Random Forest, SVM, Logistic R
 chính. Thí sinh PHẢI sử dụng ít nhất 1 mô hình Deep Learning (CNN, Transformer, BERT, DeBERTa, Qwen, \
 ViT, ResNet...) hoặc Pretrained Model làm backbone chính. ML truyền thống chỉ được phép dùng như mô \
 hình phụ (ensemble, stacking, post-processing). Vi phạm = CRITICAL.
+8. Cấm Regex / Biểu thức chính quy: TUYỆT ĐỐI KHÔNG cho phép code sử dụng regex hoặc biểu thức chính \
+quy để so khớp/xử lý dữ liệu dưới bất kỳ hình thức nào, dù nhiều hay ít. Bắt lỗi nếu thấy `import re`, \
+`re.search`, `re.match`, `re.findall`, `re.sub`, pattern regex trong string, hoặc logic so khớp dựa trên \
+regular expression. Vi phạm = CRITICAL và phải REJECT/FAIL.
+9. Cấm khai thác cấu trúc tập test (Test-Set Structural Leakage): Giải pháp phải xếp hạng/phân loại \
+từng hàng test độc lập dựa trên model đã học từ train. TUYỆT ĐỐI CẤM dùng thông tin liên hàng trong tập \
+test để ra quyết định, bao gồm gom nhóm/cluster/union-find các hàng test dựa trên co-occurrence trong \
+metadata test; fit bất kỳ mô hình hoặc biến đổi thống kê nào trên dữ liệu test (PCA, normalization, \
+KMeans, scaler, imputer, threshold/statistics learned from test...) rồi dùng kết quả đó làm basis cho \
+prediction; hoặc để prediction của hàng A bị ảnh hưởng bởi dữ liệu của hàng B khi A và B là các test row \
+độc lập. Quy tắc chung: mọi thứ được fit/learn phải đến từ train. Test chỉ được dùng để forward-pass qua \
+model/pipeline đã cố định. Vi phạm = CRITICAL và phải REJECT/FAIL.
+10. Cấm thư viện ngoài & truy cập Internet (Offline-only): Giải pháp CHỈ được dùng các thư viện đã \
+cài sẵn trong môi trường Kaggle Docker. TUYỆT ĐỐI CẤM cài đặt package ngoài hoặc bất kỳ hành vi nào \
+cần Internet lúc chạy, bao gồm: `pip install` / `!pip install` / gọi cài đặt qua `subprocess`, \
+`os.system`, `pip.main`; tải file/trọng số/dataset qua mạng bằng `requests`, `urllib`, `wget`, `curl`, \
+`torch.hub.load(...)`, `*.from_pretrained(...)` tải online, `huggingface_hub` / `hf_hub_download`, \
+`gdown`, `kaggle` API...; hoặc `import` các thư viện KHÔNG có sẵn trong Kaggle Docker. Trọng số \
+pretrained CHỈ được load từ đường dẫn offline/local (Kaggle dataset đã mount sẵn), không được tải từ \
+Internet. Vi phạm = CRITICAL và phải REJECT/FAIL.
 
 [KIỂM TRA ĐƯỜNG DẪN I/O]:
 - Kiểm tra xem code có đọc dữ liệu từ ./dataset/public/ (hoặc dataset/public/) không.
@@ -195,7 +197,7 @@ hình phụ (ensemble, stacking, post-processing). Vi phạm = CRITICAL.
 [YÊU CẦU ĐÁNH GIÁ - BẮT BUỘC TUÂN THỦ]:
 - Đọc kỹ [ĐỀ BÀI] do người dùng cung cấp và bổ sung các yêu cầu của đề bài vào tiêu chí đánh giá.
 - Đánh giá mức độ nghiêm trọng (Severity):
-  + CRITICAL: Vi phạm 1 trong các luật 1-4, 6, hoặc 7, vi phạm luật cốt lõi của [ĐỀ BÀI], code không thể chạy.
+  + CRITICAL: Vi phạm 1 trong các luật 1-4, 6, 7, 8, 9, hoặc 10, vi phạm luật cốt lõi của [ĐỀ BÀI], code không thể chạy.
   + MINOR: Lỗi ở luật số 5 (chất lượng code kém, format xấu).
 - Kết luận (Status): Chỉ "PASS" nếu KHÔNG CÓ bất kỳ lỗi CRITICAL nào. Có >= 1 lỗi CRITICAL lập tức \
 đánh "FAIL".
@@ -217,8 +219,8 @@ hình phụ (ensemble, stacking, post-processing). Vi phạm = CRITICAL.
 
 # ---------------------------------------------------------------------------
 # API clients (async)
-#   - DeepSeek: chat bựa
-#   - OpenRouter (Claude): chấm bài
+#   - DeepSeek: chat + default grader
+#   - OpenRouter: optional Claude grader
 # ---------------------------------------------------------------------------
 
 deepseek_client = AsyncOpenAI(
@@ -226,10 +228,28 @@ deepseek_client = AsyncOpenAI(
     base_url="https://api.deepseek.com",
 )
 
-claude_client = AsyncOpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
-)
+openrouter_client: AsyncOpenAI | None = None
+if OPENROUTER_API_KEY:
+    openrouter_client = AsyncOpenAI(
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+
+def _grader_client() -> AsyncOpenAI:
+    """Return the configured LLM client for grading submissions."""
+    if GRADER_PROVIDER == "deepseek":
+        return deepseek_client
+    if openrouter_client is None:
+        raise RuntimeError("OPENROUTER_API_KEY is required for Claude/OpenRouter grading")
+    return openrouter_client
+
+
+def _grader_label() -> str:
+    """Human-readable grader label for logs and embeds."""
+    if GRADER_PROVIDER == "deepseek":
+        return f"DeepSeek ({GRADER_MODEL})"
+    return f"Claude/OpenRouter ({GRADER_MODEL})"
 
 # System prompt cho chế độ chat — tính cách của Hải
 CHAT_SYSTEM_PROMPT: str = (
@@ -243,8 +263,8 @@ CHAT_SYSTEM_PROMPT: str = (
     "mấy ông cháu có thể nhờ tôi reviewer code :)))'.\n"
     "- Nếu bị hỏi vấn đề ngoài quyền hạn hoặc không muốn làm, nói bựa kiểu: 'Chê :)))' "
     "hoặc 'Việc đó tôi chê không làm đâu :)))'.\n"
-    "- Khi hướng dẫn chấm bài: 'Gửi 2 file vào kênh #code-submission đi ông cháu, "
-    "một file code (.py/.ipynb) và một file đề bài (.txt/.md), tôi chấm cho'.\n"
+    "- Khi hướng dẫn chấm bài: 'Gửi solution.py hoặc notebook vào kênh #code-submission đi ông cháu, "
+    "có thêm file đề bài (.txt/.md) thì càng tốt, không có tôi vẫn chấm'.\n"
     "- Trả lời NGẮN GỌN (tối đa 1-2 câu), bằng tiếng Việt. TUYỆT ĐỐI KHÔNG viết dài.\n"
     "- QUAN TRỌNG: Phân biệt rõ người ta đang ĐÙA hay đang HỎI THẬT:\n"
     "  + Nếu đùa/nói vui/chửi yêu → đùa lại ngắn gọn bựa bựa, KHÔNG giải thích kỹ thuật.\n"
@@ -254,9 +274,11 @@ CHAT_SYSTEM_PROMPT: str = (
     "- Khi được hỏi về các file trong task → liệt kê ngắn gọn tác dụng từng file.\n\n"
     "[THÀNH VIÊN TRONG SERVER - GHI NHỚ]:\n"
     "1. @Mora = Hà Đức. Biệt danh: 'Hài Đức' (Khang hay gọi vậy). Thỉnh thoảng trêu Đức.\n"
-    "2. @solsol = Dũng Bùi (gọi tắt: Dũng). Hay nói vớ vẩn. "
+    "2. @solsol / @solstice1707 = Dũng Bùi (gọi tắt: Dũng). Hay nói vớ vẩn. "
     "KHÔNG tự chế biệt danh khác cho Dũng (KHÔNG gọi 'Bũng Bùi'). "
-    "Nếu Dũng nói linh tinh thì bảo: 'Th Dũng đi ra kia chơi'. Chọc ghẹo Dũng.\n"
+    "Nếu Dũng nói linh tinh thì bảo: 'Th Dũng đi ra kia chơi'. Chọc ghẹo Dũng. "
+    "Có thể thỉnh thoảng dùng câu 'cam on dung vi da den' như một câu trêu Dũng, "
+    "nhưng KHÔNG dùng câu đó mọi lần.\n"
     "3. @TeacherKhang03 = Khang. Biệt danh: 'Khang sên sê'. "
     "Khang hay trêu Đức là 'Hài Đức'.\n"
     "4. @Đặng Văn Phúc Nghĩa = Nghĩa. Nghĩa thuộc dạng ngố, hay bị trêu. "
@@ -267,6 +289,12 @@ CHAT_SYSTEM_PROMPT: str = (
     "- Với các thành viên khác thì gọi chung là 'ông cháu'.\n"
     "- KHÔNG tự chế biệt danh mới cho bất kỳ ai.\n"
     "- Nhận diện người nói qua tên Discord username trong tin nhắn.\n\n"
+    "[LUẬT LÀM THƠ VỀ DŨNG]:\n"
+    "- Nếu người gửi là Dũng (@solsol hoặc @solstice1707) và kêu Boss làm thơ, "
+    "hoặc bất kỳ ai yêu cầu làm thơ về Dũng, hãy viết một bài thơ ngắn 4-6 dòng trêu Dũng.\n"
+    "- Bài thơ ưu tiên dùng cụm 'Dũng khứa' và 'anh Dũng Bùi', giọng bựa, dí dỏm, "
+    "nhưng không dùng nội dung quá tục, hạ nhục thân thể, hoặc scatological.\n"
+    "- Khi đang làm thơ về Dũng, được phép vượt rule 1-2 câu; chỉ gửi bài thơ, không giải thích thêm.\n\n"
     "[EMOJI TÙY CHỈNH - DÙNG ÍT THÔI, khoảng 15% tin nhắn]:\n"
     "Bạn có 4 emoji riêng, PHẢI viết ĐÚNG format Discord:\n"
     "- <:IMG_0367:1501803655601586277> = mặt chê/khinh → dùng khi chê việc gì đó, từ chối, hoặc 'chê :)))'\n"
@@ -320,12 +348,141 @@ async def chat_reply(
     messages.append({"role": "user", "content": full_message})
 
     response = await deepseek_client.chat.completions.create(
-        model="deepseek-v4-pro",
+        model=DEEPSEEK_MODEL,
         messages=messages,
         temperature=0.7,
         max_tokens=1024,
     )
     return response.choices[0].message.content or "Chê :)))"
+
+
+async def should_reply_to_message(
+    message_content: str,
+    username: str = "",
+    history: list[dict[str, str]] | None = None,
+) -> bool:
+    """Use DeepSeek to decide whether a normal chat message is about Boss/the bot."""
+    if not message_content.strip():
+        return False
+
+    recent_history = history[-8:] if history else []
+    history_text = "\n".join(
+        f"{item.get('role', '?')}: {item.get('content', '')[:300]}"
+        for item in recent_history
+    )
+
+    classifier_prompt = (
+        "Bạn là bộ phân loại intent cho Discord bot tên Boss/Eris.\n"
+        "Bạn đọc lịch sử chat gần đây và tin nhắn mới để quyết định bot có nên tự nhảy vào reply không.\n"
+        "Trả true nếu tin nhắn mới có vẻ đang nói trực tiếp với bot, gọi bot, hỏi bot, nhờ bot làm gì, "
+        "bình luận về bot, hoặc dùng đại từ/cụm ám chỉ như 'nó', 'con này', 'thằng này', 'thằng bot', "
+        "'con bot', 'AI', 'reviewer', 'nó rep', 'nó chấm' mà trong ngữ cảnh có khả năng là Boss/Eris.\n"
+        "Thiên về true khi có nghi ngờ hợp lý rằng người nói muốn bot phản ứng. "
+        "Trả false chỉ khi rõ ràng họ đang nói chuyện với nhau và không liên quan tới bot.\n"
+        "Ví dụ true: 'phải không boss', 'con bot còn khinh m', 'nó khinh m rồi', "
+        "'gọi nó vào', 'sao nó không rep', 'hỏi nó xem', 'bot đâu rồi'.\n"
+        "Ví dụ false: chuyện bóng đá/ăn uống/code giữa người dùng mà không có dấu hiệu gọi hoặc nhắc bot.\n"
+        "Chỉ trả JSON đúng format: {\"reply\": true} hoặc {\"reply\": false}.\n\n"
+        f"[LỊCH SỬ GẦN ĐÂY]\n{history_text or '(trống)'}\n\n"
+        f"[NGƯỜI GỬI]\n{username or '?'}\n\n"
+        f"[TIN NHẮN MỚI]\n{message_content[:1000]}"
+    )
+
+    response = await deepseek_client.chat.completions.create(
+        model=DEEPSEEK_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Bạn chỉ phân loại intent. Không trò chuyện. "
+                    "Không giải thích. Chỉ trả strict JSON."
+                ),
+            },
+            {"role": "user", "content": classifier_prompt},
+        ],
+        temperature=0.0,
+        max_tokens=512,
+    )
+    raw = response.choices[0].message.content or "{}"
+    result = _extract_json(raw)
+    reply_value = result.get("reply", False)
+    if isinstance(reply_value, bool):
+        decision = reply_value
+    elif isinstance(reply_value, str):
+        decision = reply_value.strip().lower() in {"true", "yes", "y", "1", "có", "co"}
+    else:
+        raw_lower = raw.strip().lower()
+        decision = "true" in raw_lower and "false" not in raw_lower
+
+    log.info(
+        "DeepSeek intent classifier decision=%s raw=%s",
+        decision,
+        raw.replace("\n", " ")[:300],
+    )
+    return decision
+
+
+async def should_roast_dung_message(
+    message_content: str,
+    username: str = "",
+    history: list[dict[str, str]] | None = None,
+) -> bool:
+    """Use DeepSeek to decide whether Dũng is saying something roast-worthy."""
+    if not message_content.strip():
+        return False
+
+    recent_history = history[-8:] if history else []
+    history_text = "\n".join(
+        f"{item.get('role', '?')}: {item.get('content', '')[:300]}"
+        for item in recent_history
+    )
+
+    classifier_prompt = (
+        "Bạn là bộ phân loại intent cho Discord bot tên Boss/Eris, chỉ dùng cho người tên Dũng Bùi.\n"
+        "Bạn đọc lịch sử chat gần đây và tin nhắn mới của Dũng để quyết định Boss có nên tự nhảy vào trêu Dũng không.\n"
+        "Trả true nếu tin nhắn của Dũng là nói xàm, nhây, bait, cà khịa, đùa vớ vẩn, khoe khoang vô nghĩa, "
+        "spam cảm xúc, hoặc tạo tình huống hợp lý để Boss chọc quê Dũng.\n"
+        "Trả false nếu Dũng đang hỏi thật, nói chuyện nghiêm túc, hỏi kỹ thuật/code, báo lỗi, nhận task, "
+        "hoặc tin nhắn quá mơ hồ/không đủ chất để trêu.\n"
+        "Thiên về true khi rõ là không khí anh em đang đùa. Tránh true liên tục cho mọi tin nhắn.\n"
+        "Chỉ trả JSON đúng format: {\"roast\": true} hoặc {\"roast\": false}.\n\n"
+        f"[LỊCH SỬ GẦN ĐÂY]\n{history_text or '(trống)'}\n\n"
+        f"[NGƯỜI GỬI]\n{username or '?'}\n\n"
+        f"[TIN NHẮN MỚI CỦA DŨNG]\n{message_content[:1000]}"
+    )
+
+    response = await deepseek_client.chat.completions.create(
+        model=DEEPSEEK_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Bạn chỉ phân loại intent. Không trò chuyện. "
+                    "Không giải thích. Chỉ trả strict JSON."
+                ),
+            },
+            {"role": "user", "content": classifier_prompt},
+        ],
+        temperature=0.0,
+        max_tokens=512,
+    )
+    raw = response.choices[0].message.content or "{}"
+    result = _extract_json(raw)
+    roast_value = result.get("roast", False)
+    if isinstance(roast_value, bool):
+        decision = roast_value
+    elif isinstance(roast_value, str):
+        decision = roast_value.strip().lower() in {"true", "yes", "y", "1", "có", "co"}
+    else:
+        raw_lower = raw.strip().lower()
+        decision = "true" in raw_lower and "false" not in raw_lower
+
+    log.info(
+        "DeepSeek Dung roast classifier decision=%s raw=%s",
+        decision,
+        raw.replace("\n", " ")[:300],
+    )
+    return decision
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -359,14 +516,14 @@ async def evaluate_submission(
     challenge_description: str,
     source_code: str,
 ) -> dict[str, Any]:
-    """Send the submission to Claude (via OpenRouter) for evaluation and return parsed JSON."""
+    """Send the submission to the configured LLM grader and return parsed JSON."""
 
     user_message = (
         f"[ĐỀ BÀI]:\n{challenge_description}\n\n"
         f"[CODE CỦA THÍ SINH]:\n```\n{source_code}\n```"
     )
 
-    log.info("Sending evaluation request to Claude (%s)…", GRADER_MODEL)
+    log.info("Sending evaluation request to %s…", _grader_label())
 
     api_kwargs: dict[str, Any] = {
         "model": GRADER_MODEL,
@@ -378,10 +535,10 @@ async def evaluate_submission(
         "temperature": 0.0,
     }
 
-    response = await claude_client.chat.completions.create(**api_kwargs)
+    response = await _grader_client().chat.completions.create(**api_kwargs)
 
     raw = response.choices[0].message.content or "{}"
-    log.info("Raw Claude response (first 500 chars): %s", raw[:500])
+    log.info("Raw grader response (first 500 chars): %s", raw[:500])
 
     # Log reasoning trace if available (R1 model)
     reasoning = getattr(response.choices[0].message, "reasoning_content", None)
@@ -457,6 +614,25 @@ async def _read_attachment(att: discord.Attachment) -> str:
     """Download an attachment and return its UTF-8 text."""
     raw_bytes = await att.read()
     return raw_bytes.decode("utf-8")
+
+
+def _fallback_challenge_description(task_ctx: dict[str, str] | None = None) -> str:
+    """Build a usable grading context when the user only submits a solution file."""
+    if task_ctx and task_ctx.get("description"):
+        return (
+            "[KHÔNG CÓ FILE ĐỀ BÀI ĐÍNH KÈM]\n"
+            "Dưới đây là context task hiện tại trong kênh Discord. "
+            "Hãy dùng context này cùng các luật cố định để chấm bài.\n\n"
+            f"[TASK]: {task_ctx.get('name', 'N/A')}\n\n"
+            f"{task_ctx['description']}"
+        )
+
+    return (
+        "[KHÔNG CÓ FILE ĐỀ BÀI ĐÍNH KÈM]\n"
+        "Người nộp chỉ gửi file solution.py/code. Hãy chấm theo các luật cố định, "
+        "kiểm tra I/O, khả năng chạy, và các vi phạm hiển nhiên trong code. "
+        "Không được tự suy đoán thêm yêu cầu riêng của đề bài."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +723,7 @@ def build_result_embed(
             inline=False,
         )
 
-    embed.set_footer(text=f"Chat: DeepSeek V4-PRO • Grading: Claude Haiku • Bot chấm bài tự động")
+    embed.set_footer(text=f"Chat: {DEEPSEEK_MODEL} • Grading: {_grader_label()} • Bot chấm bài tự động")
     embed.timestamp = discord.utils.utcnow()
 
     return embed
@@ -559,9 +735,10 @@ def build_result_embed(
 
 async def _run_grading_pipeline(
     code_attachment: discord.Attachment,
-    desc_attachment: discord.Attachment,
+    desc_attachment: discord.Attachment | None = None,
+    task_ctx: dict[str, str] | None = None,
 ) -> tuple[discord.Embed | None, discord.Embed | None, discord.User | discord.Member | None]:
-    """Download files, call DeepSeek, return (result_embed, error_embed).
+    """Download files, call the configured AI grader, return (result_embed, error_embed).
 
     Exactly one of (result_embed, error_embed) will be non-None.
     """
@@ -571,6 +748,8 @@ async def _run_grading_pipeline(
 
     # --- Validate sizes ---
     for att in (code_attachment, desc_attachment):
+        if att is None:
+            continue
         if att.size > MAX_FILE_SIZE:
             return None, discord.Embed(
                 title="❌  File quá lớn",
@@ -591,14 +770,17 @@ async def _run_grading_pipeline(
             colour=discord.Colour.red(),
         ), None
 
-    try:
-        challenge_description = await _read_attachment(desc_attachment)
-    except Exception as exc:
-        return None, discord.Embed(
-            title="❌  Lỗi đọc file đề bài",
-            description=f"Không thể đọc `{desc_attachment.filename}`: `{exc}`",
-            colour=discord.Colour.red(),
-        ), None
+    if desc_attachment is not None:
+        try:
+            challenge_description = await _read_attachment(desc_attachment)
+        except Exception as exc:
+            return None, discord.Embed(
+                title="❌  Lỗi đọc file đề bài",
+                description=f"Không thể đọc `{desc_attachment.filename}`: `{exc}`",
+                colour=discord.Colour.red(),
+            ), None
+    else:
+        challenge_description = _fallback_challenge_description(task_ctx)
 
     # --- Extract source code ---
     if code_ext == ".ipynb":
@@ -613,21 +795,21 @@ async def _run_grading_pipeline(
             colour=discord.Colour.orange(),
         ), None
 
-    if not challenge_description.strip():
+    if desc_attachment is not None and not challenge_description.strip():
         return None, discord.Embed(
             title="❌  Đề bài rỗng",
             description=f"`{desc_attachment.filename}` không có nội dung.",
             colour=discord.Colour.orange(),
         ), None
 
-    # --- Call Claude (grading) ---
+    # --- Call AI grader ---
     try:
         result = await evaluate_submission(challenge_description, source_code)
     except Exception as exc:
-        log.exception("Claude API call failed")
+        log.exception("AI grader API call failed")
         return None, discord.Embed(
             title="❌  Lỗi API",
-            description=f"Không thể kết nối tới Claude API.\n```{exc}```",
+            description=f"Không thể kết nối tới AI chấm bài ({_grader_label()}).\n```{exc}```",
             colour=discord.Colour.red(),
         ), None
 
@@ -656,10 +838,10 @@ class GraderBot(discord.Client):
         self.chat_history: dict[int, deque] = {}
         # Cooldown nhắc Dũng chơi game
         self._last_game_nag: float = 0.0
+        # Cooldown tự roast Dũng mỗi kênh: {channel_id: timestamp}
+        self._last_dung_roast: dict[int, float] = {}
         # Cooldown lurk mỗi kênh: {channel_id: timestamp}
         self._last_lurk: dict[int, float] = {}
-        # Joke đang active: {channel_id: {"joke": {...}, "message_id": int, "answered": bool}}
-        self._active_joke: dict[int, dict] = {}
 
     async def setup_hook(self) -> None:
         """Sync the command tree globally on startup."""
@@ -673,10 +855,6 @@ class GraderBot(discord.Client):
         if not self.daily_greeting.is_running():
             self.daily_greeting.start()
             log.info("Daily greeting task started.")
-        # Start daily joke loop
-        if not self.daily_joke.is_running():
-            self.daily_joke.start()
-            log.info("Daily joke task started.")
 
     @tasks.loop(minutes=1)
     async def daily_greeting(self) -> None:
@@ -696,86 +874,14 @@ class GraderBot(discord.Client):
                     except Exception as exc:
                         log.error("Failed to send morning greeting: %s", exc)
 
-        # --- One-time announcements ---
-        announce_flag = os.path.join(os.path.dirname(__file__), ".announced_taskflow")
-        if not os.path.exists(announce_flag):
-            for guild in self.guilds:
-                for channel in guild.text_channels:
-                    if channel.name == MORNING_CHANNEL:
-                        try:
-                            embed = discord.Embed(
-                                title="🚀 Ra mắt TaskFlow — Nền tảng nhận Task mới!",
-                                description=(
-                                    "Chào mấy ông cháu, sếp Hải vừa làm xong web **TaskFlow** "
-                                    "để mấy ông cháu lên nhận task làm cho tiện.\n\n"
-                                    "**Cách dùng:**\n"
-                                    "1️⃣ Vào link → Đăng ký tài khoản → Xác thực email\n"
-                                    "2️⃣ Chờ Admin (sếp Hải) duyệt tài khoản\n"
-                                    "3️⃣ Đăng nhập → Vào **Task Board** → Nhận task\n"
-                                    "4️⃣ Làm xong → Nộp `solution.py` + `submission.csv`\n\n"
-                                    "**Tính năng:**\n"
-                                    "• 📋 Task Board với deadline countdown\n"
-                                    "• 🏆 Leaderboard xem ai điểm cao nhất\n"
-                                    "• ⭐ Reviewer chấm bài & feedback\n"
-                                    "• 💰 Payout tracking\n\n"
-                                    "Lên nhận task ngay đê mấy ông cháu! 🔥"
-                                ),
-                                colour=discord.Colour.green(),
-                                url="https://taskflow-production-f51b.up.railway.app",
-                            )
-                            embed.set_footer(text="TaskFlow by Caspian • Apple-inspired Dark Mode")
-                            await channel.send(embed=embed)
-                            log.info("TaskFlow announcement sent to #%s", channel.name)
-                        except Exception as exc:
-                            log.error("Failed to send TaskFlow announcement: %s", exc)
-            # Mark as announced
-            with open(announce_flag, "w") as f:
-                f.write(datetime.datetime.now(VN_TZ).isoformat())
-
     @daily_greeting.before_loop
     async def before_daily_greeting(self) -> None:
         """Wait until bot is ready before starting the loop."""
         await self.wait_until_ready()
 
-    @tasks.loop(minutes=1)
-    async def daily_joke(self) -> None:
-        """Đố vui mỗi ngày lúc 12h trưa VN."""
-        now = datetime.datetime.now(VN_TZ)
-        if now.hour != JOKE_HOUR or now.minute != JOKE_MINUTE:
-            return
-
-        joke = _get_next_joke()
-        if not joke:
-            return
-
-        for guild in self.guilds:
-            for channel in guild.text_channels:
-                if channel.name == JOKE_CHANNEL:
-                    try:
-                        embed = discord.Embed(
-                            title="🤔 Đố Vui Của Ngày",
-                            description=f"**{joke['question']}**\n\n"
-                                        f"Reply tin nhắn này để trả lời! Ai đúng trước thắng 🏆",
-                            colour=discord.Colour.gold(),
-                        )
-                        embed.set_footer(text="Boss Đố Vui • Reply để trả lời")
-                        msg = await channel.send(embed=embed)
-                        self._active_joke[channel.id] = {
-                            "joke": joke,
-                            "message_id": msg.id,
-                            "answered": False,
-                        }
-                        log.info("Daily joke sent to #%s: %s", channel.name, joke['question'])
-                    except Exception as exc:
-                        log.error("Failed to send daily joke: %s", exc)
-
-    @daily_joke.before_loop
-    async def before_daily_joke(self) -> None:
-        await self.wait_until_ready()
-
     async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
-        """Nhắc Dũng (solsol) chơi game ít thôi khi phát hiện bật game."""
-        if after.name != DUNG_USERNAME and getattr(after, "display_name", "") != DUNG_USERNAME:
+        """Nhắc Dũng chơi game ít thôi khi phát hiện bật game."""
+        if not _is_dung_user(after):
             return
 
         # Kiểm tra: trước đó KHÔNG chơi game, giờ CÓ chơi game
@@ -804,13 +910,24 @@ class GraderBot(discord.Client):
             for channel in guild.text_channels:
                 if channel.name == GAME_NAG_CHANNEL:
                     try:
-                        await channel.send(
-                            f"Ê {after.mention}, th Dũng chơi {game_name} ít thôi, "
-                            f"code đi ông cháu :)))"
+                        prompt = (
+                            "[NHẮC DŨNG CHƠI GAME]\n"
+                            f"Discord mention bắt buộc giữ nguyên: {after.mention}\n"
+                            f"Dũng Bùi username {after.name} vừa bật game: {game_name}.\n"
+                            "Viết 1 câu tiếng Việt thật ngắn để nhắc Dũng chơi ít thôi và quay lại code/làm việc. "
+                            "Giọng Boss bựa, hài, không dài dòng, không giải thích. "
+                            "Bắt buộc có mention ở đầu hoặc trong câu. Có thể dùng tối đa 1 emoji custom."
                         )
-                        log.info("Game nag sent to %s for playing %s", after.name, game_name)
+                        async with channel.typing():
+                            nag = await chat_reply(prompt, username="SYSTEM")
+                        if after.mention not in nag:
+                            nag = f"{after.mention} {nag}"
+                        if len(nag) > 2000:
+                            nag = nag[:1997] + "…"
+                        await channel.send(nag)
+                        log.info("AI game nag sent to %s for playing %s", after.name, game_name)
                     except Exception as exc:
-                        log.error("Failed to send game nag: %s", exc)
+                        log.error("Failed to generate AI game nag: %s", exc)
                     return  # Chỉ gửi 1 kênh
 
     async def on_message(self, message: discord.Message) -> None:
@@ -827,46 +944,6 @@ class GraderBot(discord.Client):
         if message.author.bot:
             return
 
-        # --- Kiểm tra trả lời đố vui ---
-        if (
-            message.reference
-            and message.reference.message_id
-            and message.channel.id in self._active_joke
-        ):
-            joke_data = self._active_joke[message.channel.id]
-            if (
-                message.reference.message_id == joke_data["message_id"]
-                and not joke_data["answered"]
-            ):
-                user_answer = message.content.strip().lower()
-                correct_answer = joke_data["joke"]["answer"].lower()
-
-                # So sánh linh hoạt: chứa đáp án hoặc gần đúng
-                is_correct = (
-                    correct_answer in user_answer
-                    or user_answer in correct_answer
-                )
-
-                if is_correct:
-                    joke_data["answered"] = True
-                    await message.reply(
-                        f"🏆 **{message.author.display_name}** trả lời đúng rồi!\n"
-                        f"Đáp án: **{joke_data['joke']['answer']}** <:IMG_0368:1501803653403508888>"
-                    )
-                else:
-                    # Trêu người trả lời sai
-                    try:
-                        tease = await chat_reply(
-                            f"[ĐỐ VUI] Câu hỏi: \"{joke_data['joke']['question']}\". "
-                            f"{message.author.name} trả lời sai: \"{message.content}\". "
-                            f"Trêu người này 1 câu ngắn (KHÔNG tiết lộ đáp án), bựa bựa.",
-                            username=message.author.name,
-                        )
-                        await message.reply(tease)
-                    except Exception:
-                        await message.reply(f"Sai rồi ông cháu, thử lại đi <:IMG_0367:1501803655601586277>")
-                return
-
         # --- Lưu tất cả tin nhắn vào ký ức kênh (dù có @mention hay không) ---
         if message.content and message.content.strip():
             if message.channel.id not in self.chat_history:
@@ -875,9 +952,9 @@ class GraderBot(discord.Client):
                 {"role": "user", "content": f"[{message.author.name}]: {message.content[:500]}"}
             )
 
-        # --- Chế độ 1: Chat khi @mention bot ---
-        # Kiểm tra cả user mention lẫn role mention (vì @Boss có thể là role)
+        # --- Chế độ 1: Chat khi @mention hoặc DeepSeek nhận ra đang nói tới bot ---
         is_mentioned = False
+        auto_roast_instruction = ""
 
         # Check user mention
         if self.user and self.user.mentioned_in(message) and not message.mention_everyone:
@@ -889,6 +966,50 @@ class GraderBot(discord.Client):
                 if "boss" in role.name.lower():
                     is_mentioned = True
                     break
+
+        if not is_mentioned and message.content and message.content.strip():
+            try:
+                is_mentioned = await should_reply_to_message(
+                    message.content,
+                    username=str(message.author.name),
+                    history=list(self.chat_history.get(message.channel.id, [])),
+                )
+                if is_mentioned:
+                    log.info("DeepSeek intent classifier triggered chat for %s", message.author)
+            except Exception:
+                log.exception("DeepSeek intent classifier failed")
+                is_mentioned = False
+
+        if (
+            not is_mentioned
+            and message.content
+            and message.content.strip()
+            and _is_dung_user(message.author)
+        ):
+            import time as _time
+            now_ts = _time.time()
+            last_roast = self._last_dung_roast.get(message.channel.id, 0.0)
+            if now_ts - last_roast > DUNG_ROAST_COOLDOWN:
+                try:
+                    should_roast = await should_roast_dung_message(
+                        message.content,
+                        username=str(message.author.name),
+                        history=list(self.chat_history.get(message.channel.id, [])),
+                    )
+                    if should_roast:
+                        is_mentioned = True
+                        self._last_dung_roast[message.channel.id] = now_ts
+                        auto_roast_instruction = (
+                            "[AUTO ROAST DŨNG]\n"
+                            "Dũng vừa nói xàm/nhây trong kênh. Hãy tự nhảy vào trêu Dũng 1 câu ngắn, "
+                            "bựa vừa phải, không quá tục, không giải thích.\n"
+                            "Có thể thỉnh thoảng dùng đúng câu 'cam on dung vi da den' như một câu mỉa nhẹ, "
+                            "nhưng KHÔNG bắt buộc và KHÔNG dùng mọi lần.\n\n"
+                            "[TIN NHẮN CỦA DŨNG]\n"
+                        )
+                        log.info("DeepSeek Dung roast classifier triggered chat for %s", message.author)
+                except Exception:
+                    log.exception("DeepSeek Dung roast classifier failed")
 
         if is_mentioned:
             # Lấy nội dung tin nhắn (bỏ phần @mention — cả user lẫn role)
@@ -947,7 +1068,7 @@ class GraderBot(discord.Client):
                         member_roles = [r.name for r in message.author.roles if r.name != '@everyone']
 
                     reply = await chat_reply(
-                        reply_context + text,
+                        reply_context + auto_roast_instruction + text,
                         username=str(message.author.name),
                         user_roles=member_roles,
                         task_ctx=ctx,
@@ -1041,19 +1162,27 @@ class GraderBot(discord.Client):
             if message.channel.name != ALLOWED_CHANNEL_NAME:
                 return
 
-        # Need at least 2 attachments
-        if len(message.attachments) < 2:
+        # Need at least one code attachment; description file is optional.
+        if not message.attachments:
             return
 
         code_file, desc_file = _classify_attachments(list(message.attachments))
 
-        # Only trigger if we found both a code file and a description file
-        if code_file is None or desc_file is None:
+        # Only trigger if we found a code file.
+        if code_file is None:
             return
 
         log.info(
             "Auto-detected submission from %s — code: %s, desc: %s",
-            message.author, code_file.filename, desc_file.filename,
+            message.author,
+            code_file.filename,
+            desc_file.filename if desc_file else "(none)",
+        )
+
+        desc_text = (
+            f" + **{desc_file.filename}**"
+            if desc_file
+            else "\nKhông có file đề bài; tôi sẽ chấm theo luật cố định và context task hiện tại nếu có."
         )
 
         # Send a "processing" message
@@ -1061,7 +1190,7 @@ class GraderBot(discord.Client):
             embed=discord.Embed(
                 title="⏳  Đang chấm bài…",
                 description=(
-                    f"Đã nhận **{code_file.filename}** + **{desc_file.filename}**.\n"
+                    f"Đã nhận **{code_file.filename}**{desc_text}\n"
                     f"Đang gửi tới AI phân tích, vui lòng đợi…"
                 ),
                 colour=discord.Colour.blurple(),
@@ -1069,7 +1198,11 @@ class GraderBot(discord.Client):
         )
 
         # Run the grading pipeline
-        result_or_none, error_embed, _ = await _run_grading_pipeline(code_file, desc_file)
+        result_or_none, error_embed, _ = await _run_grading_pipeline(
+            code_file,
+            desc_file,
+            task_ctx=self.task_context.get(message.channel.id),
+        )
 
         if error_embed is not None:
             await processing_msg.edit(embed=error_embed)
@@ -1315,23 +1448,23 @@ client = GraderBot()
 
 
 # ---------------------------------------------------------------------------
-# /grade slash command (alternative — accepts 2 file attachments)
+# /grade slash command (alternative — accepts a code file and optional description)
 # ---------------------------------------------------------------------------
 
 @client.tree.command(
     name="grade",
-    description="Chấm điểm tự động bài nộp AI/ML. Đính kèm file code + file đề bài.",
+    description="Chấm điểm tự động bài nộp AI/ML. File đề bài là tùy chọn.",
 )
 @app_commands.describe(
     submission="File code bài làm (.py hoặc .ipynb).",
-    description="File đề bài / yêu cầu bài tập (.txt hoặc .md).",
+    description="File đề bài / yêu cầu bài tập (.txt hoặc .md), nếu có.",
 )
 async def grade_command(
     interaction: discord.Interaction,
     submission: discord.Attachment,
-    description: discord.Attachment,
+    description: discord.Attachment | None = None,
 ) -> None:
-    """Handle the /grade slash command with two file attachments."""
+    """Handle the /grade slash command with a code file and optional description."""
 
     # Chỉ cho phép dùng trong kênh chỉ định
     if ALLOWED_CHANNEL_NAME and hasattr(interaction.channel, "name"):
@@ -1345,15 +1478,14 @@ async def grade_command(
     # 1. Defer immediately (LLM call will take time)
     await interaction.response.defer(ephemeral=False)
     log.info(
-        "Received /grade from %s — code: %s (%d bytes), desc: %s (%d bytes)",
+        "Received /grade from %s — code: %s (%d bytes), desc: %s",
         interaction.user,
         submission.filename, submission.size,
-        description.filename, description.size,
+        f"{description.filename} ({description.size} bytes)" if description else "(none)",
     )
 
     # 2. Validate file extensions
     code_ext = os.path.splitext(submission.filename)[1].lower()
-    desc_ext = os.path.splitext(description.filename)[1].lower()
 
     if code_ext not in CODE_EXTENSIONS:
         await interaction.followup.send(
@@ -1368,7 +1500,12 @@ async def grade_command(
         )
         return
 
-    if desc_ext not in DESCRIPTION_EXTENSIONS:
+    if description is not None:
+        desc_ext = os.path.splitext(description.filename)[1].lower()
+    else:
+        desc_ext = ""
+
+    if description is not None and desc_ext not in DESCRIPTION_EXTENSIONS:
         await interaction.followup.send(
             embed=discord.Embed(
                 title="❌  Lỗi file đề bài",
@@ -1382,7 +1519,15 @@ async def grade_command(
         return
 
     # 3. Run the grading pipeline
-    result_or_none, error_embed, _ = await _run_grading_pipeline(submission, description)
+    result_or_none, error_embed, _ = await _run_grading_pipeline(
+        submission,
+        description,
+        task_ctx=(
+            client.task_context.get(interaction.channel.id)
+            if interaction.channel is not None and hasattr(interaction.channel, "id")
+            else None
+        ),
+    )
 
     if error_embed is not None:
         await interaction.followup.send(embed=error_embed)
