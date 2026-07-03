@@ -68,6 +68,14 @@ MAX_FILE_SIZE: int = 512 * 1024
 # Bot chỉ hoạt động trong kênh này (để trống = tất cả kênh)
 ALLOWED_CHANNEL_NAME: str = os.getenv("ALLOWED_CHANNEL", "code-submission")
 
+# Các bot ID được phép nộp bài (bỏ qua bộ lọc "ignore other bots").
+# Đặt nhiều ID cách nhau bằng dấu phẩy trong biến môi trường ALLOWED_BOT_IDS.
+# Mặc định gồm bot "Dian" (eris harness). Để trống = không cho bot nào.
+ALLOWED_BOT_IDS: set[int] = {
+    int(x) for x in os.getenv("ALLOWED_BOT_IDS", "1522247839307141282")
+    .replace(" ", "").split(",") if x
+}
+
 # Thư mục chứa các task
 TASKS_DIR: Path = Path("/Users/havanhai/shipd")
 
@@ -940,8 +948,9 @@ class GraderBot(discord.Client):
             len(message.attachments),
         )
 
-        # Ignore messages from bots (including ourselves)
-        if message.author.bot:
+        # Ignore messages from bots (including ourselves), except allowlisted bots.
+        # Bot của chính Boss KHÔNG nằm trong ALLOWED_BOT_IDS nên vẫn bị bỏ qua → không tự-loop.
+        if message.author.bot and message.author.id not in ALLOWED_BOT_IDS:
             return
 
         # --- Lưu tất cả tin nhắn vào ký ức kênh (dù có @mention hay không) ---
