@@ -100,9 +100,9 @@ GAME_NAG_COOLDOWN: int = 3600  # Chỉ nhắc tối đa 1 lần / giờ
 DUNG_ROAST_COOLDOWN: int = int(os.getenv("DUNG_ROAST_COOLDOWN", "120"))
 
 # Lurk mode: bot tự xen vào cuộc trò chuyện
-LURK_CHANCE: float = float(os.getenv("LURK_CHANCE", "0.03"))  # 3% mỗi tin nhắn
+LURK_CHANCE: float = float(os.getenv("LURK_CHANCE", "0.01"))  # 1% mỗi tin nhắn
 LURK_MIN_MESSAGES: int = 5  # Cần ít nhất 5 tin trong history mới lurk
-LURK_COOLDOWN: int = 300  # Tối thiểu 5 phút giữa 2 lần lurk mỗi kênh
+LURK_COOLDOWN: int = 600  # Tối thiểu 10 phút giữa 2 lần lurk mỗi kênh
 
 # Số tin nhắn tối đa lưu ký ức mỗi kênh
 MAX_CHAT_HISTORY: int = 20
@@ -977,6 +977,11 @@ class GraderBot(discord.Client):
         )
         is_submission = _in_submit_channel and _code_att is not None
 
+        # Bot được allowlist (vd Dian) CHỈ để chấm bài — KHÔNG bao giờ chat/trêu/lurk với nó.
+        # (Các tin "create:/claim ..." của Dian không phải submission nên trước đây bị nhánh
+        #  chat bắt trả lời → phiền. Cờ này chặn hẳn mọi tương tác chat với bot.)
+        author_is_bot = message.author.bot
+
         # --- Chế độ 1: Chat khi @mention hoặc DeepSeek nhận ra đang nói tới bot ---
         is_mentioned = False
         auto_roast_instruction = ""
@@ -992,7 +997,7 @@ class GraderBot(discord.Client):
                     is_mentioned = True
                     break
 
-        if not is_mentioned and not is_submission and message.content and message.content.strip():
+        if not is_mentioned and not is_submission and not author_is_bot and message.content and message.content.strip():
             try:
                 is_mentioned = await should_reply_to_message(
                     message.content,
@@ -1008,6 +1013,7 @@ class GraderBot(discord.Client):
         if (
             not is_mentioned
             and not is_submission
+            and not author_is_bot
             and message.content
             and message.content.strip()
             and _is_dung_user(message.author)
@@ -1037,7 +1043,7 @@ class GraderBot(discord.Client):
                 except Exception:
                     log.exception("DeepSeek Dung roast classifier failed")
 
-        if is_mentioned and not is_submission:
+        if is_mentioned and not is_submission and not author_is_bot:
             # Lấy nội dung tin nhắn (bỏ phần @mention — cả user lẫn role)
             text = message.content
             # Bỏ user mentions
@@ -1139,7 +1145,7 @@ class GraderBot(discord.Client):
                 return
 
         # --- Chế độ Lurk: Bot tự xen vào cuộc trò chuyện ---
-        if message.content and message.content.strip() and not message.attachments:
+        if message.content and message.content.strip() and not message.attachments and not author_is_bot:
             import time as _time
             ch_id = message.channel.id
             ch_hist = self.chat_history.get(ch_id, deque())
