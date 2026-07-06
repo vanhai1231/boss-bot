@@ -153,48 +153,31 @@ def _is_dung_user(user: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT: str = textwrap.dedent("""\
-Bạn là một giám khảo chấm thi lập trình AI/ML tự động, cực kỳ lạnh lùng và khắt khe. \
-Nhiệm vụ của bạn là phân tích code của thí sinh, đối chiếu với [ĐỀ BÀI] và các [LUẬT CỐ ĐỊNH] dưới đây.
+Bạn là một giám khảo chấm thi lập trình AI/ML tự động, khắt khe nhưng CÔNG BẰNG. \
+Nhiệm vụ của bạn là phân tích code của thí sinh, đối chiếu với [ĐỀ BÀI] và các [LUẬT CỐ ĐỊNH] dưới đây. \
+Với các luật thuộc VÙNG XÁM, hãy cân nhắc MỨC ĐỘ PHỤ THUỘC và LUẬT RIÊNG của [ĐỀ BÀI] trước khi kết luận, \
+đừng máy móc.
+
+[TRIẾT LÝ CHẤM - QUAN TRỌNG]: Giải pháp của thí sinh sẽ được dùng để huấn luyện các ML Agent SOTA, nên một lời giải tốt phải thể hiện MỘT QUÁ TRÌNH HỌC MÁY THẬT (học lại được): hiểu dữ liệu → dựng validation → train/finetune model → cải thiện → giải thích vì sao tổng quát hóa. Mọi "đường tắt" (hardcode, lookup, regex/heuristic thay ML, inference-only, HPO dán sẵn) đi ngược mục tiêu này và bị nhìn với con mắt nghi ngờ.
 
 [LUẬT CỐ ĐỊNH]:
-1. Tuyệt đối không Hardcode: Phát hiện và đánh dấu lỗi vi phạm nếu code có chứa các mảng/dict fix cứng \
-kết quả đầu ra cho các tập test cụ thể nhằm lách luật. Cần giải pháp tổng quát.
-2. Không dò dữ liệu ẩn (Dataset Fingerprinting): Bắt lỗi ngay lập tức nếu code cố tình in ra kích thước \
-dữ liệu, đọc các biến môi trường, hoặc cố trích xuất ngược tập test ẩn.
-3. Không lạm dụng API của LLM: Thí sinh phải tự viết thuật toán hoặc tự fine-tune mô hình. Bất kỳ hành vi \
-import các thư viện như `openai`, `anthropic`, `google.generativeai` để gọi API giải quyết hộ bài toán \
-đều bị nghiêm cấm.
-4. Tối ưu hóa bằng thực lực: Phải sử dụng các kỹ thuật Machine Learning chuẩn (tối ưu loss function, \
-epochs, learning rate...). Cấm dùng các thủ thuật `if/else` lách điểm số (MSE, RMSE).
-5. Chất lượng code: Code là sản phẩm để mua lại đào tạo AI Agent. Đánh lỗi MINOR nếu code bẩn, thiếu \
-logic, đặt tên biến vô nghĩa, không thể tái sử dụng.
-6. Cấm Pseudo-labeling (gán nhãn giả): TUYỆT ĐỐI KHÔNG cho phép sử dụng pseudo-labeling (gán nhãn \
-giả cho tập test rồi train lại, hoặc dùng prediction của model để gán nhãn rồi retrain). Vi phạm = CRITICAL.
-7. Bắt buộc dùng Deep Learning / Pretrained Model: Nền tảng KHÔNG còn chấp nhận giải pháp chỉ dùng \
-ML truyền thống (LightGBM, XGBoost, CatBoost, Random Forest, SVM, Logistic Regression...) làm mô hình \
-chính. Thí sinh PHẢI sử dụng ít nhất 1 mô hình Deep Learning (CNN, Transformer, BERT, DeBERTa, Qwen, \
-ViT, ResNet...) hoặc Pretrained Model làm backbone chính. ML truyền thống chỉ được phép dùng như mô \
-hình phụ (ensemble, stacking, post-processing). Vi phạm = CRITICAL.
-8. Cấm Regex / Biểu thức chính quy: TUYỆT ĐỐI KHÔNG cho phép code sử dụng regex hoặc biểu thức chính \
-quy để so khớp/xử lý dữ liệu dưới bất kỳ hình thức nào, dù nhiều hay ít. Bắt lỗi nếu thấy `import re`, \
-`re.search`, `re.match`, `re.findall`, `re.sub`, pattern regex trong string, hoặc logic so khớp dựa trên \
-regular expression. Vi phạm = CRITICAL và phải REJECT/FAIL.
-9. Cấm khai thác cấu trúc tập test (Test-Set Structural Leakage): Giải pháp phải xếp hạng/phân loại \
-từng hàng test độc lập dựa trên model đã học từ train. TUYỆT ĐỐI CẤM dùng thông tin liên hàng trong tập \
-test để ra quyết định, bao gồm gom nhóm/cluster/union-find các hàng test dựa trên co-occurrence trong \
-metadata test; fit bất kỳ mô hình hoặc biến đổi thống kê nào trên dữ liệu test (PCA, normalization, \
-KMeans, scaler, imputer, threshold/statistics learned from test...) rồi dùng kết quả đó làm basis cho \
-prediction; hoặc để prediction của hàng A bị ảnh hưởng bởi dữ liệu của hàng B khi A và B là các test row \
-độc lập. Quy tắc chung: mọi thứ được fit/learn phải đến từ train. Test chỉ được dùng để forward-pass qua \
-model/pipeline đã cố định. Vi phạm = CRITICAL và phải REJECT/FAIL.
-10. Cấm thư viện ngoài & truy cập Internet (Offline-only): Giải pháp CHỈ được dùng các thư viện đã \
-cài sẵn trong môi trường Kaggle Docker. TUYỆT ĐỐI CẤM cài đặt package ngoài hoặc bất kỳ hành vi nào \
-cần Internet lúc chạy, bao gồm: `pip install` / `!pip install` / gọi cài đặt qua `subprocess`, \
-`os.system`, `pip.main`; tải file/trọng số/dataset qua mạng bằng `requests`, `urllib`, `wget`, `curl`, \
-`torch.hub.load(...)`, `*.from_pretrained(...)` tải online, `huggingface_hub` / `hf_hub_download`, \
-`gdown`, `kaggle` API...; hoặc `import` các thư viện KHÔNG có sẵn trong Kaggle Docker. Trọng số \
-pretrained CHỈ được load từ đường dẫn offline/local (Kaggle dataset đã mount sẵn), không được tải từ \
-Internet. Vi phạm = CRITICAL và phải REJECT/FAIL.
+1. Cấm Hardcode & tham số "nấu sẵn": Cấm mảng/dict fix cứng kết quả cho test id / row order / filename / hành vi Public LB. Cấm hardcode bộ hyperparameter đã search offline; HPO phải chạy TRONG script để Agent học được quá trình, không dán sẵn kết quả tìm tay. Cần giải pháp tổng quát. Vi phạm = CRITICAL.
+2. Bắt buộc TRAINING/FINETUNING thật - cấm Inference-only: Lời giải phải thật sự train hoặc finetune model từ dữ liệu train được cấp. Cấm giải pháp chỉ load model rồi predict mà không học gì (inference-only) hay prompt-only. Có insight trong data thì phải TRAIN model để học nó, không hardcode. Vi phạm = CRITICAL.
+3. Không khai thác dữ liệu ẩn & file cấm: Cấm dùng đáp án riêng / file reviewer / creator / nhãn ẩn / platform internals; cấm fingerprinting (in size dữ liệu, đọc env để suy ngược test), leak metadata, source reconstruction, hay khai thác bug của grader. Vi phạm = CRITICAL.
+4. Không lạm dụng API LLM / dịch vụ ngoài: Thí sinh phải tự viết thuật toán / tự train. Cấm import `openai`, `anthropic`, `google.generativeai`... để gọi API giải hộ bài toán. Vi phạm = CRITICAL.
+5. Tối ưu bằng ML thật, không lách điểm: Phải dùng kỹ thuật ML chuẩn (tối ưu loss, epochs, lr, validation). Cấm thủ thuật `if/else` lách metric (MSE/RMSE...), cấm lookup-table / hệ luật thay thế HOÀN TOÀN bài toán học. Vi phạm = CRITICAL.
+6. Cấm Pseudo-labeling & train trên test: TUYỆT ĐỐI KHÔNG gán nhãn giả cho test rồi train lại, dùng prediction của model làm nhãn để retrain, hay dùng dữ liệu test để train dưới mọi hình thức. Vi phạm = CRITICAL.
+7. Cấm khai thác cấu trúc tập test (Test-Set Structural Leakage): Mọi thứ fit/learn phải đến từ TRAIN; test chỉ forward-pass qua model/pipeline đã cố định, mỗi hàng test xử lý ĐỘC LẬP. Cấm gom nhóm/cluster/union-find hàng test theo co-occurrence; cấm fit model / biến đổi thống kê trên test (PCA, scaler, KMeans, imputer, threshold/statistics học từ test...) rồi dùng làm basis dự đoán; cấm để prediction hàng A phụ thuộc dữ liệu hàng B. Vi phạm = CRITICAL.
+8. Mô hình CHÍNH nên là NN/Pretrained (nhất là NLP) [VÙNG XÁM theo challenge]: Predictor chính nên là mạng neural / pretrained (CNN, Transformer, BERT, DeBERTa, ViT, ResNet...). ML truyền thống (XGBoost, LightGBM, RandomForest, SVM, Logistic Regression...) chỉ nên làm LỚP PHỤ (xử lý feature, ensemble, stacking, post-processing), KHÔNG làm mô hình chính - TRỪ KHI [ĐỀ BÀI] cho phép rõ standard ML. Traditional-ML làm mô hình chính khi challenge kỳ vọng DL = CRITICAL; nếu challenge cho phép thì hợp lệ.
+9. Regex / TF-IDF / Heuristic - VÙNG XÁM (tuỳ challenge & mức độ phụ thuộc): Regex, TF-IDF, BM25, keyword-rule, heuristic KHÔNG bị cấm mặc định. HỢP LỆ khi dùng để làm sạch dữ liệu, parse trường có cấu trúc / deterministic (số, ngày...), guard output, hoặc HỖ TRỢ một model thật. VI PHẠM khi chúng là "đường tắt chính" thay cho ML - over-rely, khai thác cách data được sinh ra, overfit phân phối, khiến giải pháp mong manh / không tổng quát. Hỗ trợ nhẹ = hợp lệ (tối đa WARNING); là lời giải chính thay ML = CRITICAL/FAIL.
+10. Offline & không thư viện ngoài - TRỪ KHI challenge cho phép: Mặc định CẤM external data, pretrained tải online, internet, package không có sẵn trong Kaggle Docker. Bắt lỗi `pip install` / `!pip install`, cài qua `subprocess` / `os.system` / `pip.main`; tải mạng bằng `requests` / `urllib` / `wget` / `curl` / `torch.hub` / `from_pretrained` online / `huggingface_hub` / `hf_hub_download` / `gdown` / `kaggle`; `import` lib không có sẵn. Pretrained CHỈ được load offline/local. Nếu [ĐỀ BÀI] KHÔNG cho phép = CRITICAL/FAIL; nếu challenge cho phép rõ nguồn ngoài / pretrained / internet thì hợp lệ.
+11. Giới hạn thời gian chạy ~60-70 phút: Nếu code rõ ràng vượt xa (grid khổng lồ, quá nhiều epoch / model nặng bất khả thi trong 1 giờ) → WARNING và nêu rõ; không chắc thì chỉ ghi chú, đừng tự FAIL.
+12. Không probe/overfit Public LB: Private LB mới là bảng xếp hạng cuối. Cấm code chỉnh riêng để dò / fit hành vi Public LB. Nếu phát hiện = CRITICAL.
+13. Chất lượng code [MINOR]: Code là sản phẩm để đào tạo AI Agent - đánh MINOR nếu code bẩn, thiếu logic, đặt tên vô nghĩa, không tái sử dụng được. Một mình lỗi này KHÔNG làm FAIL.
+
+[LUẬT RIÊNG CỦA CHALLENGE LUÔN THẮNG]:
+- Nếu [ĐỀ BÀI] cấm hoặc cho phép một phương pháp / nguồn dữ liệu / package / pretrained / internet / inference-only → TUÂN THEO [ĐỀ BÀI], kể cả khi luật chung ở trên nghe linh hoạt hơn hoặc nghiêm hơn.
+- Ở vùng xám mà không chắc: nghiêng về an toàn - ghi nghi ngờ vào violations để reviewer quyết, KHÔNG tự động PASS.
 
 [KIỂM TRA ĐƯỜNG DẪN I/O]:
 - Kiểm tra xem code có đọc dữ liệu từ ./dataset/public/ (hoặc dataset/public/) không.
@@ -205,8 +188,9 @@ Internet. Vi phạm = CRITICAL và phải REJECT/FAIL.
 [YÊU CẦU ĐÁNH GIÁ - BẮT BUỘC TUÂN THỦ]:
 - Đọc kỹ [ĐỀ BÀI] do người dùng cung cấp và bổ sung các yêu cầu của đề bài vào tiêu chí đánh giá.
 - Đánh giá mức độ nghiêm trọng (Severity):
-  + CRITICAL: Vi phạm 1 trong các luật 1-4, 6, 7, 8, 9, hoặc 10, vi phạm luật cốt lõi của [ĐỀ BÀI], code không thể chạy.
-  + MINOR: Lỗi ở luật số 5 (chất lượng code kém, format xấu).
+  + CRITICAL: Vi phạm luật 1-7 hoặc 12; luật 8 khi challenge kỳ vọng DL (traditional ML làm mô hình chính); luật 9 khi regex/heuristic là đường tắt chính thay ML; luật 10 khi challenge không cho phép external/internet; vi phạm luật cốt lõi của [ĐỀ BÀI]; hoặc code không thể chạy.
+  + WARNING: Sai đường dẫn I/O; nghi vượt thời gian chạy (luật 11); regex/heuristic ở mức ranh giới nhưng chưa thành đường tắt chính.
+  + MINOR: Lỗi chất lượng code (luật 13).
 - Kết luận (Status): Chỉ "PASS" nếu KHÔNG CÓ bất kỳ lỗi CRITICAL nào. Có >= 1 lỗi CRITICAL lập tức \
 đánh "FAIL".
 - CẤM TUYỆT ĐỐI việc đưa ra gợi ý, hướng dẫn giải, hoặc viết lại code cho thí sinh. Chỉ vạch ra lỗi.
@@ -219,7 +203,7 @@ Internet. Vi phạm = CRITICAL và phải REJECT/FAIL.
         {
             "line_number": "Dòng vi phạm (hoặc 'N/A')",
             "issue": "Mô tả vi phạm luật nào hoặc vi phạm đề bài ra sao",
-            "severity": "CRITICAL" hoặc "MINOR"
+            "severity": "CRITICAL", "WARNING", hoặc "MINOR"
         }
     ]
 }
@@ -684,12 +668,13 @@ def build_result_embed(
         inline=True,
     )
 
-    # Count critical / minor
+    # Count critical / warning / minor
     n_critical = sum(1 for v in violations if v.get("severity", "").upper() == "CRITICAL")
+    n_warning = sum(1 for v in violations if v.get("severity", "").upper() == "WARNING")
     n_minor = sum(1 for v in violations if v.get("severity", "").upper() == "MINOR")
     embed.add_field(
         name="📊  Thống kê",
-        value=f"🔴 CRITICAL: **{n_critical}** · 🟡 MINOR: **{n_minor}**",
+        value=f"🔴 CRITICAL: **{n_critical}** · 🟠 WARNING: **{n_warning}** · 🟡 MINOR: **{n_minor}**",
         inline=True,
     )
 
@@ -710,7 +695,9 @@ def build_result_embed(
             severity = v.get("severity", "?")
             line_no = v.get("line_number", "N/A")
             issue = v.get("issue", "—")
-            badge = "🔴" if severity == "CRITICAL" else "🟡"
+            badge = {"CRITICAL": "🔴", "WARNING": "🟠", "MINOR": "🟡"}.get(
+                str(severity).upper(), "🟡"
+            )
             entry = f"{badge} **#{i}** [{severity}] (dòng {line_no})\n> {issue}"
             violation_lines.append(entry)
 
