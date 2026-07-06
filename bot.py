@@ -174,6 +174,7 @@ Với các luật thuộc VÙNG XÁM, hãy cân nhắc MỨC ĐỘ PHỤ THUỘC
 11. Giới hạn thời gian chạy ~60-70 phút: Nếu code rõ ràng vượt xa (grid khổng lồ, quá nhiều epoch / model nặng bất khả thi trong 1 giờ) → WARNING và nêu rõ; không chắc thì chỉ ghi chú, đừng tự FAIL.
 12. Không probe/overfit Public LB: Private LB mới là bảng xếp hạng cuối. Cấm code chỉnh riêng để dò / fit hành vi Public LB. Nếu phát hiện = CRITICAL.
 13. Chất lượng code [MINOR]: Code là sản phẩm để đào tạo AI Agent - đánh MINOR nếu code bẩn, thiếu logic, đặt tên vô nghĩa, không tái sử dụng được. Một mình lỗi này KHÔNG làm FAIL.
+14. Đúng LOẠI bài (from-scratch vs fine-tune) - PHẢI khớp [ĐỀ BÀI]: Nếu [ĐỀ BÀI] là FROM-SCRATCH (xây & train từ đầu) mà solution đi FINE-TUNE / dùng pretrained weights → REJECT. Nếu [ĐỀ BÀI] là FINE-TUNE (tinh chỉnh pretrained) mà solution lại tự xây/train FROM-SCRATCH → REJECT. Cách giải phải đúng hướng challenge yêu cầu; đi sai loại = FAIL dù thuật toán đúng. (Liên quan luật 10: bài from-scratch thì pretrained bị cấm dù mạng cho tải weights.) Vi phạm = CRITICAL.
 
 [LUẬT RIÊNG CỦA CHALLENGE LUÔN THẮNG]:
 - Nếu [ĐỀ BÀI] cấm hoặc cho phép một phương pháp / nguồn dữ liệu / package / pretrained / internet / inference-only → TUÂN THEO [ĐỀ BÀI], kể cả khi luật chung ở trên nghe linh hoạt hơn hoặc nghiêm hơn.
@@ -188,7 +189,7 @@ Với các luật thuộc VÙNG XÁM, hãy cân nhắc MỨC ĐỘ PHỤ THUỘC
 [YÊU CẦU ĐÁNH GIÁ - BẮT BUỘC TUÂN THỦ]:
 - Đọc kỹ [ĐỀ BÀI] do người dùng cung cấp và bổ sung các yêu cầu của đề bài vào tiêu chí đánh giá.
 - Đánh giá mức độ nghiêm trọng (Severity):
-  + CRITICAL: Vi phạm luật 1-7 hoặc 12; luật 8 khi challenge kỳ vọng DL (traditional ML làm mô hình chính); luật 9 khi regex/heuristic là đường tắt chính thay ML; luật 10 khi cài/tải package ngoài hoặc dùng thư viện không có sẵn trong runtime; vi phạm luật cốt lõi của [ĐỀ BÀI]; hoặc code không thể chạy.
+  + CRITICAL: Vi phạm luật 1-7, 12, hoặc 14 (giải sai loại bài from-scratch/fine-tune); luật 8 khi challenge kỳ vọng DL (traditional ML làm mô hình chính); luật 9 khi regex/heuristic là đường tắt chính thay ML; luật 10 khi cài/tải package ngoài hoặc dùng thư viện không có sẵn trong runtime; vi phạm luật cốt lõi của [ĐỀ BÀI]; hoặc code không thể chạy.
   + WARNING: Sai đường dẫn I/O; nghi vượt thời gian chạy (luật 11); regex/heuristic ở mức ranh giới nhưng chưa thành đường tắt chính.
   + MINOR: Lỗi chất lượng code (luật 13).
 - Kết luận (Status): Chỉ "PASS" nếu KHÔNG CÓ bất kỳ lỗi CRITICAL nào. Có >= 1 lỗi CRITICAL lập tức \
