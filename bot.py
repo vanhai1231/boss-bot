@@ -1020,11 +1020,10 @@ class GraderBot(discord.Client):
         if not isinstance(member, discord.Member):
             return  # DM hoặc không lấy được Member → bỏ qua
 
-        # --- Miễn trừ: chủ nhân, admin, người có quyền kick, và chính bot ---
+        # --- Miễn trừ: CHỈ chủ nhân và chính bot ---
+        # (admin/mod KHÔNG còn được tha — họ vẫn bị xét như người thường.
+        #  Discord vẫn tự chặn nếu role của họ cao hơn Boss.)
         if member.name.lower() in OWNER_USERNAMES:
-            return
-        perms = getattr(member, "guild_permissions", None)
-        if perms is not None and (perms.administrator or perms.kick_members):
             return
         if self.user and member.id == self.user.id:
             return
@@ -1768,6 +1767,7 @@ async def meme_command(interaction: discord.Interaction) -> None:
     name="kick",
     description="Kick một thành viên khỏi server (chỉ chủ nhân dùng được).",
 )
+@app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     member="Thành viên cần kick.",
     reason="Lý do kick (tuỳ chọn).",
@@ -1779,6 +1779,10 @@ async def kick_command(
 ) -> None:
     """Owner-only /kick — có kiểm tra quyền và báo lỗi thứ bậc role rõ ràng."""
     if interaction.user.name.lower() not in OWNER_USERNAMES:
+        log.warning(
+            "/kick DENIED — %s (name=%s) không phải chủ nhân, định kick %s",
+            interaction.user, interaction.user.name, member,
+        )
         await interaction.response.send_message(
             "❌ Chỉ chủ nhân mới được dùng lệnh này.", ephemeral=True
         )
